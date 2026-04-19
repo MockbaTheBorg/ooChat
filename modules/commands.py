@@ -247,10 +247,16 @@ def _help_handler(chat: Any, args: str) -> Dict[str, Any]:
 
     # /help <command> — show long help for a specific command
     if args:
-        # Normalize: accept 'attach' or '/attach'
-        name = args if args.startswith("/") else f"/{args}"
-        # Also try '?' as the literal name for /?
-        candidates = [name, args]
+        # Build candidate variants so `/help attach` and `/help /attach`
+        # behave the same. Try the form with and without a leading '/'.
+        s = args
+        if s.startswith("/"):
+            stripped = s.lstrip("/")
+            candidates = [s, stripped, f"/{stripped}"]
+        else:
+            stripped = s
+            candidates = [f"/{stripped}", stripped]
+
         info = None
         for candidate in candidates:
             found = next(
