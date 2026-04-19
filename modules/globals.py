@@ -6,11 +6,12 @@ accessible to commands and skills via the ChatApp instance.
 
 # Default runtime configuration
 DEFAULTS = {
-    'model': 'openai/gpt-oss-20b',
+    # Default to no model selected. Users must explicitly pick one.
+    'model': None,
     'host': 'localhost',
     'port': 11434,
     'openai_mode': False,
-    'render_mode': 'hybrid',  # 'stream', 'markdown', 'hybrid'
+    'render_mode': 'markdown',  # 'stream', 'markdown', 'hybrid'
     'guardrails_mode': 'confirm-destructive',  # 'off', 'confirm-destructive', 'read-only'
     'enable_tools': True,
     'show_thinking': True,

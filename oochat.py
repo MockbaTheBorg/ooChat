@@ -84,12 +84,11 @@ class ChatApp:
         config_file = Path(args.config) if args.config else None
         config = config_module.load_config(cli_overrides, config_file)
 
-        # Set model from args or config
-        if args.model:
-            globals_module.GLOBALS['model'] = args.model
+        # Do not set a default model here; defer to session/resume logic.
+        # CLI-provided model is kept in `args.model` for later validation.
 
-        # Update renderer mode
-        self.renderer.set_mode(globals_module.GLOBALS.get('render_mode', 'hybrid'))
+        # Update renderer mode (default to markdown)
+        self.renderer.set_mode(globals_module.GLOBALS.get('render_mode', 'markdown'))
 
         # Load commands, tools, skills
         extra_commands = [Path(f) for f in (args.command or [])]
@@ -148,9 +147,41 @@ class ChatApp:
                 self.context.add_system(configured_system)
                 self.context.system_prompt = configured_system
 
-            # If model arg provided on resume, override
-            if args.model and action == "resume":
-                globals_module.GLOBALS['model'] = args.model
+            # Determine model selection. Priority:
+            # 1. CLI arg (args.model)
+            # 2. If resuming, inherit session's recorded model
+            # 3. Otherwise keep whatever is in GLOBALS (possibly from config)
+            chosen_model = None
+            if args.model:
+                chosen_model = args.model
+            elif action == "resume":
+                sess_model = session.metadata.get("model") if getattr(session, 'metadata', None) else None
+                if sess_model:
+                    chosen_model = sess_model
+            else:
+                chosen_model = globals_module.GLOBALS.get('model')
+
+            # Validate chosen model against the pulled model list (if available).
+            # If the model is not present in the API's model list, warn and unset.
+            if chosen_model and getattr(self, '_cached_models', None):
+                model_valid = False
+                for m in self._cached_models:
+                    if isinstance(m, str) and m == chosen_model:
+                        model_valid = True
+                        break
+                    if isinstance(m, dict):
+                        # match common keys/values like 'name' or 'id'
+                        for v in m.values():
+                            if isinstance(v, str) and v == chosen_model:
+                                model_valid = True
+                                break
+                        if model_valid:
+                            break
+                if not model_valid:
+                    print(f"Warning: model '{chosen_model}' not found on the API. Unsetting current model.")
+                    chosen_model = None
+
+            globals_module.GLOBALS['model'] = chosen_model
 
         except SessionError as e:
             print(f"Session error: {e}")
@@ -277,7 +308,6 @@ class ChatApp:
             return
 
         # Normal message - process through pre-filters
-        # Normal message - process through pre-filters (global then command)
         prompt = self.filters.apply_pre_send(text)
         prompt = self.registry.apply_pre_filters(prompt)
 
@@ -285,11 +315,16 @@ class ChatApp:
         if self.buffer.has_attachments():
             prompt = self.buffer.pop_and_prepend(prompt)
 
+        # If no model is selected yet, notify the user and don't send.
+        model = self.GLOBALS.get('model')
+        if not model:
+            print("\nNo model selected. Use /model to select a model before sending prompts.")
+            return
+
         # Add user message to context
         self.context.add_user(prompt)
 
         # Send to model
-        model = self.GLOBALS.get('model')
         tools = self.tools.get_tool_schemas() if self.GLOBALS.get('enable_tools') else None
         max_tokens = self.GLOBALS.get('default_max_tokens')
 
@@ -366,9 +401,17 @@ class ChatApp:
         if self.buffer.has_attachments():
             prompt = self.buffer.pop_and_prepend(prompt)
 
+        # If no model is selected yet, notify and don't send the prompt.
+        model = self.GLOBALS.get('model')
+        if not model:
+            if ui:
+                ui.append_assistant("No model selected. Use /model to select a model before sending prompts.")
+            else:
+                print("\nNo model selected. Use /model to select a model before sending prompts.")
+            return
+
         self.context.add_user(prompt)
 
-        model = self.GLOBALS.get('model')
         tools = self.tools.get_tool_schemas() if self.GLOBALS.get('enable_tools') else None
         max_tokens = self.GLOBALS.get('default_max_tokens')
 
@@ -476,6 +519,9 @@ class ChatApp:
 
         # After tool calls, get final response from model
         model = self.GLOBALS.get('model')
+        if not model:
+            print("\nNo model selected. Cannot request final response; use /model to select one.")
+            return
         response_text = ""
 
         try:

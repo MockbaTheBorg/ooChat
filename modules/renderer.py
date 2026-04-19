@@ -7,6 +7,8 @@ Supports three render modes:
 """
 
 import sys
+import threading
+import time
 from typing import Any, Dict, List, Optional, TextIO
 
 from . import globals as globals_module
@@ -24,6 +26,9 @@ except ImportError:
 
 # Console instance for rich output
 _console = None
+
+# Spinner sequence (single string so it can be easily modified)
+SPINNER_SEQUENCE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 def get_console():
@@ -124,6 +129,9 @@ class Renderer:
         self._in_think = False
         self._current_think = ""
         self._thinking_blocks: List[str] = []
+        # Spinner controls for markdown 'Thinking...' indicator
+        self._spinner_thread: Optional[threading.Thread] = None
+        self._spinner_stop: Optional[threading.Event] = None
 
     def set_mode(self, mode: str) -> None:
         """Set render mode.
@@ -146,6 +154,11 @@ class Renderer:
         self._in_think = False
         self._current_think = ""
         self._thinking_blocks = []
+        # If in markdown mode, show a transient 'Thinking...' indicator
+        # on TTYs. This is animated but non-blocking and will be stopped
+        # by `end_response` before the final content is printed.
+        if self.mode == "markdown" and sys.stdout.isatty():
+            self._start_spinner()
 
     def stream_chunk(self, chunk: str) -> None:
         """Stream a response chunk.
@@ -222,6 +235,10 @@ class Renderer:
         """
         self._streaming = False
 
+        # Stop transient spinner (if any) before rendering final content so
+        # the 'Thinking...' indicator disappears.
+        self._stop_spinner()
+
         # Compose the final display text (buffer + any final_text)
         text = final_text or "".join(self._buffer)
 
@@ -244,6 +261,9 @@ class Renderer:
                 else:
                     print("---")
 
+        elif self.mode == "stream":
+            # Ensure there's a blank line after streamed responses.
+            print()
         elif self.mode == "hybrid":
             if text.strip():
                 if messages:
@@ -315,6 +335,63 @@ class Renderer:
         else:
             print("---")
 
+    def _spinner_loop(self, stop_event: threading.Event):
+        """Internal spinner loop that updates a single line until stopped.
+
+        Uses `SPINNER_SEQUENCE` for the characters so it can be modified
+        as a single string.
+        """
+        chars = SPINNER_SEQUENCE
+        i = 0
+        # Ensure spinner starts on its own line
+        try:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+        while not stop_event.is_set():
+            try:
+                # Print only the spinner character (no text label)
+                sys.stdout.write("\r" + chars[i % len(chars)] + " ")
+                sys.stdout.flush()
+            except Exception:
+                pass
+            i += 1
+            stop_event.wait(0.12)
+
+        # Clear the spinner line
+        try:
+            sys.stdout.write("\r" + " " * 4 + "\r")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    def _start_spinner(self) -> None:
+        """Start the spinner thread (no-op if already running)."""
+        if self._spinner_thread and self._spinner_thread.is_alive():
+            return
+        self._spinner_stop = threading.Event()
+        self._spinner_thread = threading.Thread(
+            target=self._spinner_loop, args=(self._spinner_stop,), daemon=True
+        )
+        self._spinner_thread.start()
+
+    def _stop_spinner(self) -> None:
+        """Stop the spinner thread and join it."""
+        if self._spinner_stop:
+            try:
+                self._spinner_stop.set()
+            except Exception:
+                pass
+        if self._spinner_thread:
+            try:
+                self._spinner_thread.join(timeout=0.5)
+            except Exception:
+                pass
+        self._spinner_thread = None
+        self._spinner_stop = None
+
     def render_assistant_message(self, content: str) -> None:
         """Render a complete assistant message.
 
@@ -328,6 +405,8 @@ class Renderer:
                 render_markdown("---")
             else:
                 print("---")
+                # Extra blank line after finished response in stream mode
+                print()
         elif self.mode in ("markdown", "hybrid"):
             print()  # Add newline
             render_markdown(content)
@@ -444,10 +523,14 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                     render_markdown("---")
                 else:
                     print("---")
+                    # Extra blank line after finished response in stream mode
+                    print()
             else:
                 # stream mode: plain text
                 render_stream(render_content + "\n")
                 print("---")
+                # Extra blank line after finished response in stream mode
+                print()
         elif role == "system":
             # System messages are stored/exported but are hidden by default
             # during redraw. Set `show_system=True` to display them.
