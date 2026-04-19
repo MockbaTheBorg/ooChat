@@ -120,7 +120,8 @@ def register(chat):
                 data = globals_module.GLOBALS
             except Exception:
                 data = {}
-            display = json.dumps(data, indent=2, ensure_ascii=False)
+            pretty = json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True, default=str)
+            display = "```json\n" + pretty + "\n```"
             return {"display": display + "\n", "context": None}
 
         # Parse arguments (support quoted values)
