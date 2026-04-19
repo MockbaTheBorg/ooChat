@@ -51,6 +51,7 @@ class ChatApp:
         self.registry = CommandRegistry()
         self.tools = ToolRegistry()
         self.skills = SkillRegistry()
+        self.filters = FilterRegistry()
         self.context = Context()
         self.buffer = AttachmentBuffer()
         self.renderer = Renderer()
@@ -276,7 +277,9 @@ class ChatApp:
             return
 
         # Normal message - process through pre-filters
-        prompt = self.registry.apply_pre_filters(text)
+        # Normal message - process through pre-filters (global then command)
+        prompt = self.filters.apply_pre_send(text)
+        prompt = self.registry.apply_pre_filters(prompt)
 
         # Add attachments
         if self.buffer.has_attachments():
@@ -323,8 +326,9 @@ class ChatApp:
             # Render the (possibly filtered) display content
             self.renderer.end_response(display_text, self.context.get_messages())
 
-            # Apply post-filters
-            _ = self.registry.apply_post_filters(context_text)
+            # Apply post-filters (command registry then global filters)
+            post_text = self.registry.apply_post_filters(context_text)
+            _ = self.filters.apply_post_receive(post_text)
 
             # Save session
             self.session.save()
@@ -354,8 +358,9 @@ class ChatApp:
                 ui.append_assistant(result["display"])
             return
 
-        # Normal message flow
-        prompt = self.registry.apply_pre_filters(text)
+        # Normal message flow (apply global then command filters)
+        prompt = self.filters.apply_pre_send(text)
+        prompt = self.registry.apply_pre_filters(prompt)
 
         # Attachments
         if self.buffer.has_attachments():
@@ -395,7 +400,8 @@ class ChatApp:
                 return
 
             self.context.add_assistant(context_text)
-            _ = self.registry.apply_post_filters(context_text)
+            post_text = self.registry.apply_post_filters(context_text)
+            _ = self.filters.apply_post_receive(post_text)
             self.session.save()
 
         except APIError as e:
@@ -450,8 +456,23 @@ class ChatApp:
             if result.get("error"):
                 print(f"Error: {result['error']}")
 
-            # Add result to context
-            self.context.add_tool_result(call_id, result.get("output", ""))
+            # Respect tool display and context hints
+            display_directly = tool.get("display_directly", False)
+            include_in_context = tool.get("include_in_context", True)
+
+            result_output = result.get("output", "")
+
+            if display_directly:
+                try:
+                    if self.renderer.mode in ("markdown", "hybrid"):
+                        self.renderer.render_assistant_message(result_output)
+                    else:
+                        print(f"\n{result_output}\n")
+                except Exception:
+                    print(f"\n{result_output}\n")
+
+            if include_in_context:
+                self.context.add_tool_result(call_id, result_output)
 
         # After tool calls, get final response from model
         model = self.GLOBALS.get('model')
@@ -474,6 +495,10 @@ class ChatApp:
             self.context.add_assistant(context_text)
             self.renderer.end_response(display_text, self.context.get_messages())
 
+            # Apply post-filters (command registry then global filters)
+            post_text = self.registry.apply_post_filters(context_text)
+            _ = self.filters.apply_post_receive(post_text)
+
             self.session.save()
 
         except APIError as e:
@@ -493,7 +518,25 @@ class ChatApp:
         if not tool:
             return {"output": "", "error": f"Unknown tool: {tool_name}"}
 
-        return execute_tool(tool, args)
+        # Enforce guardrails for manual tool execution (mirror model-driven flow)
+        allowed, reason = self.tools.is_allowed(tool_name)
+        if not allowed:
+            return {"output": "", "error": f"Tool blocked by guardrails: {reason}"}
+
+        # If the tool requires confirmation, prompt the user
+        if reason == "NEEDS_CONFIRMATION":
+            confirm = input(f"\nTool '{tool_name}' may modify state. Proceed? [y/N]: ").strip().lower()
+            if confirm != 'y':
+                return {"output": "", "error": "User cancelled"}
+
+        try:
+            print(f"\nExecuting: {tool_name}({args})")
+            result = execute_tool(tool, args)
+            if result.get("error"):
+                print(f"Error: {result['error']}")
+            return result
+        except Exception as e:
+            return {"output": "", "error": str(e)}
 
     def _save_and_exit(self) -> None:
         """Save session and exit."""

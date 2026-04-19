@@ -21,9 +21,9 @@ def register(chat):
         """
         from modules.renderer import redraw_conversation
 
-        # Redraw the conversation
+        # Redraw the conversation (include system messages for explicit /redraw)
         messages = chat.context.get_messages()
-        redraw_conversation(messages, chat.renderer)
+        redraw_conversation(messages, chat.renderer, show_system=True)
 
         return {"display": None, "context": None}
 

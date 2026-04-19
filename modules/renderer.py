@@ -367,7 +367,8 @@ class Renderer:
 
 def redraw_conversation(messages: List[Dict[str, Any]],
                         renderer: Renderer = None,
-                        show_header: bool = True) -> None:
+                        show_header: bool = True,
+                        show_system: bool = False) -> None:
     """Redraw entire conversation using current render mode.
 
     Args:
@@ -448,7 +449,24 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 render_stream(render_content + "\n")
                 print("---")
         elif role == "system":
-            # Skip system messages in redraw
-            pass
+            # System messages are stored/exported but are hidden by default
+            # during redraw. Set `show_system=True` to display them.
+            if not show_system:
+                continue
+            try:
+                if renderer:
+                    renderer.render_system_message(content)
+                else:
+                    # Fallback simple display
+                    if RICH_AVAILABLE:
+                        console = get_console()
+                        console.print(f"[dim]{content}[/dim]")
+                    else:
+                        print(f"[{content}]")
+            except Exception:
+                try:
+                    print(f"[SYSTEM] {content}")
+                except Exception:
+                    pass
         elif role == "tool":
             print(f"[Tool result]: {content[:200]}{'...' if len(content) > 200 else ''}\n")

@@ -116,6 +116,14 @@ def register(chat):
         model = chat.GLOBALS.get("model")
         response_text = ""
         try:
+            # Respect per-skill display_format by temporarily overriding
+            # the renderer mode (restore after rendering).
+            orig_mode = chat.renderer.get_mode()
+            if getattr(skill, 'display_format', None) == 'markdown':
+                chat.renderer.set_mode('markdown')
+            elif getattr(skill, 'display_format', None) == 'plain':
+                chat.renderer.set_mode('stream')
+
             chat.renderer.start_response()
             for chunk in send_chat(model, messages, stream=True):
                 content = chunk.get("content", "")
@@ -127,6 +135,11 @@ def register(chat):
                 response_text, include_blocks=True
             )
             chat.renderer.end_response(display_text)
+            # Restore original renderer mode
+            try:
+                chat.renderer.set_mode(orig_mode)
+            except Exception:
+                pass
 
         except APIError as e:
             print(f"\nAPI error in skill '{name}': {e}")

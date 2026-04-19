@@ -76,13 +76,26 @@ def register(chat):
             # Respect configured maximum characters for tool/context output
             max_chars = int(chat.GLOBALS.get("max_tool_output_chars", 16384))
 
+            # Tool display/context flags
+            display_directly = tool.get("display_directly", False)
+            include_in_context = tool.get("include_in_context", True)
+
             if silent:
                 display = body
                 context = None
             else:
-                display = f"---\n{body}---\n"
-                result_output = str(result.get('output', ''))
-                context = f"Tool {tool_name} executed. Result: {result_output[:max_chars]}"
+                # Choose display style based on tool hint
+                if display_directly:
+                    display = body
+                else:
+                    display = f"---\n{body}---\n"
+
+                # Only include in context when tool permits it
+                if include_in_context:
+                    result_output = str(result.get('output', ''))
+                    context = f"Tool {tool_name} executed. Result: {result_output[:max_chars]}"
+                else:
+                    context = None
 
             return {
                 "display": display,
