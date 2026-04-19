@@ -1,0 +1,20 @@
+{
+  "name": "run_shell",
+  "description": "Execute a shell command and return the output",
+  "read_only": false,
+  "destructive": true,
+  "display_directly": false,
+  "include_in_context": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "Shell command to execute"
+      }
+    },
+    "required": ["command"]
+  },
+  "argv": ["python3", "-c", "import json,sys,subprocess; args=json.load(sys.stdin); result=subprocess.run(args['command'], shell=True, capture_output=True, text=True); print(result.stdout or result.stderr)"],
+  "timeout": 60
+}

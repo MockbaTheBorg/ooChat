@@ -1,0 +1,20 @@
+{
+  "name": "read_file",
+  "description": "Read a text file from disk",
+  "read_only": true,
+  "destructive": false,
+  "display_directly": false,
+  "include_in_context": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to the file to read"
+      }
+    },
+    "required": ["path"]
+  },
+  "argv": ["python3", "-c", "import json,sys; args=json.load(sys.stdin); print(open(args['path']).read())"],
+  "timeout": 30
+}

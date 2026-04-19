@@ -1,0 +1,19 @@
+{
+  "name": "list_directory",
+  "description": "List files and directories in a path",
+  "read_only": true,
+  "destructive": false,
+  "display_directly": false,
+  "include_in_context": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Directory path to list"
+      }
+    },
+    "required": ["path"]
+  },
+  "command": "ls -la {path}"
+}

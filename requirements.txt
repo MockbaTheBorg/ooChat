@@ -1,0 +1,11 @@
+# ooChat dependencies
+# Python 3.8+ required
+
+# HTTP requests for API communication
+requests>=2.28.0
+
+# Input handling with autocomplete, history, multiline
+prompt_toolkit>=3.0.0
+
+# Markdown rendering and styled terminal output
+rich>=13.0.0

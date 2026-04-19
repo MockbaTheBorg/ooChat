@@ -1,0 +1,24 @@
+{
+  "name": "write_file",
+  "description": "Write content to a text file",
+  "read_only": false,
+  "destructive": true,
+  "display_directly": false,
+  "include_in_context": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to the file to write"
+      },
+      "content": {
+        "type": "string",
+        "description": "Content to write to the file"
+      }
+    },
+    "required": ["path", "content"]
+  },
+  "argv": ["python3", "-c", "import json,sys; args=json.load(sys.stdin); open(args['path'], 'w').write(args['content']); print('File written:', args['path'])"],
+  "timeout": 30
+}

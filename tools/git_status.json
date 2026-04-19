@@ -1,0 +1,14 @@
+{
+  "name": "git_status",
+  "description": "Show the git status of the repository",
+  "read_only": true,
+  "destructive": false,
+  "display_directly": false,
+  "include_in_context": true,
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  },
+  "command": "git status"
+}
