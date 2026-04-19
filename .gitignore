@@ -210,3 +210,4 @@ __marimo__/
 *.sh
 pytest*
 tests/
+.ooChat/
