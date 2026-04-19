@@ -29,15 +29,17 @@ PROMPT_STYLE = Style.from_dict({
 class CommandCompleter(Completer):
     """Autocomplete completer for commands and model names."""
 
-    def __init__(self, registry, models=None):
+    def __init__(self, registry, models=None, skills=None):
         """Initialize completer.
 
         Args:
             registry: Command registry instance.
             models: Optional list of model dicts for autocomplete.
+            skills: Optional SkillRegistry for % autocomplete.
         """
         self.registry = registry
         self.models = models or []
+        self.skills = skills
 
     def get_completions(self, document, complete_event):
         """Generate completions for the current input.
@@ -61,6 +63,18 @@ class CommandCompleter(Completer):
                         name,
                         start_position=-len(model_prefix),
                         display=f"{name}",
+                    )
+            return
+
+        # Handle % <skill_name> autocomplete
+        if text.startswith('%') and self.skills is not None:
+            skill_prefix = text[1:]
+            for skill in self.skills.list_skills():
+                if skill.name.startswith(skill_prefix):
+                    yield Completion(
+                        skill.name,
+                        start_position=-len(skill_prefix),
+                        display=f"{skill.name} - {skill.description[:30]}",
                     )
             return
 
@@ -198,7 +212,7 @@ class InputHandler:
 
     def __init__(self, registry, history_file: str = None,
                  multiline: bool = True, models: list = None, get_messages=None,
-                 mouse_support: Optional[bool] = None):
+                 mouse_support: Optional[bool] = None, skills=None):
         """Initialize input handler.
 
         Args:
@@ -210,6 +224,7 @@ class InputHandler:
         self.registry = registry
         self.multiline = multiline
         self.models = models or []
+        self.skills = skills
 
         # Mouse support: default to False to avoid capturing scroll events
         # unless explicitly enabled (e.g., in a full TUI mode).
@@ -225,8 +240,8 @@ class InputHandler:
             # Fallback to in-memory history
             self.history = InMemoryHistory()
 
-        # Create completer with models list
-        self.completer = CommandCompleter(registry, models=self.models)
+        # Create completer with models list and skills registry
+        self.completer = CommandCompleter(registry, models=self.models, skills=self.skills)
 
         # Create key bindings (pass get_messages callback for paging)
         self.bindings = create_key_bindings(multiline, get_messages=get_messages)
@@ -289,11 +304,12 @@ def create_input_handler(registry, models: list = None, mouse_support: Optional[
     Args:
         registry: Command registry.
         models: Optional list of model dicts for autocomplete.
-        **kwargs: Additional arguments for InputHandler.
+        **kwargs: Additional arguments for InputHandler.  Accepts:
+            get_messages, multiline, history_file, skills.
 
     Returns:
         InputHandler instance.
     """
     return InputHandler(registry, models=models, get_messages=kwargs.get('get_messages'),
                         multiline=kwargs.get('multiline', True), history_file=kwargs.get('history_file'),
-                        mouse_support=mouse_support)
+                        mouse_support=mouse_support, skills=kwargs.get('skills'))

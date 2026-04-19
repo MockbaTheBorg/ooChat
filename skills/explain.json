@@ -1,0 +1,15 @@
+{
+  "name": "explain",
+  "description": "Explain a concept, error, or code in plain language",
+  "version": "1.0.0",
+  "author": "ooChat",
+  "system_prompt": "You are an expert teacher. Explain concepts clearly and concisely, using analogies where helpful. Adapt the explanation depth to match what is being asked. Avoid unnecessary jargon.",
+  "prompt_template": "Please explain the following in clear, accessible terms:\n\n{{input}}",
+  "context_mode": "inherit",
+  "require_input": true,
+  "input_hint": "Enter the concept, error message, or code snippet to explain",
+  "output": {
+    "include_in_context": true,
+    "display_format": "markdown"
+  }
+}

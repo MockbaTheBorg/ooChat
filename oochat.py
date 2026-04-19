@@ -38,7 +38,7 @@ from modules.filters import FilterRegistry
 from modules.input_handler import InputHandler, create_input_handler
 from modules.renderer import Renderer, redraw_conversation
 from modules.session import Session, resolve_session, list_sessions, SessionError
-from modules.skills import load_all_skills
+from modules.skills import SkillRegistry, load_all_skills
 from modules.thinking import process_assistant_response
 from modules.tools import ToolRegistry, load_all_tools, execute_tool, needs_confirmation
 
@@ -50,6 +50,7 @@ class ChatApp:
         """Initialize chat application."""
         self.registry = CommandRegistry()
         self.tools = ToolRegistry()
+        self.skills = SkillRegistry()
         self.context = Context()
         self.buffer = AttachmentBuffer()
         self.renderer = Renderer()
@@ -96,7 +97,7 @@ class ChatApp:
 
         load_all_commands(self.registry, self, extra_commands)
         load_all_tools(self.tools, extra_tools)
-        load_all_skills(self, extra_skills)
+        load_all_skills(self.skills, extra_skills)
 
         # Pre-fetch and cache models list
         client = APIClient()
@@ -140,6 +141,12 @@ class ChatApp:
             # Load context from session
             self.context = session.context
 
+            # Apply system prompt from config/GLOBALS if context has none
+            configured_system = globals_module.GLOBALS.get("system_prompt")
+            if configured_system and not self.context.system_prompt:
+                self.context.add_system(configured_system)
+                self.context.system_prompt = configured_system
+
             # If model arg provided on resume, override
             if args.model and action == "resume":
                 globals_module.GLOBALS['model'] = args.model
@@ -155,6 +162,7 @@ class ChatApp:
             self.registry,
             models=self._cached_models,
             get_messages=lambda: self.session.context.get_messages() if self.session else [],
+            skills=self.skills,
             mouse_support=False,
         )
 
@@ -191,7 +199,7 @@ class ChatApp:
 
         logo = [
             "\n",
-            f" {color_start}▐◢▇▆▆▇◣▌{color_end}  ooChat - TUI chat for ooProxy",
+            f" {color_start}▐◢▇▆▆▇◣▌{color_end} ooChat - TUI chat for ooProxy",
             f" {color_start}▐█▚  ▞█▌{color_end} Model: {self.GLOBALS.get('model')}",
             f" {color_start}◥██████◤{color_end} Session: {self.session.session_id}",
             f"  {color_start}▝▀▆▆▀▘{color_end}  Type /? or /help for commands. Ctrl+C to exit.\n"

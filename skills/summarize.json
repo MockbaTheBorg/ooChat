@@ -1,0 +1,15 @@
+{
+  "name": "summarize",
+  "description": "Summarize text or the current conversation concisely",
+  "version": "1.0.0",
+  "author": "ooChat",
+  "system_prompt": "You are a precise summarizer. Produce clear, concise summaries that capture the essential points without losing important details. Use bullet points for multi-topic content.",
+  "prompt_template": "Please summarize the following:\n\n{{input}}",
+  "context_mode": "inherit",
+  "require_input": false,
+  "input_hint": "Paste text to summarize, or leave empty to summarize the conversation so far",
+  "output": {
+    "include_in_context": true,
+    "display_format": "markdown"
+  }
+}

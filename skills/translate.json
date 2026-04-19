@@ -1,0 +1,15 @@
+{
+  "name": "translate",
+  "description": "Translate text into another language (set globals.lang or specify inline)",
+  "version": "1.0.0",
+  "author": "ooChat",
+  "system_prompt": "You are a professional translator. Translate the provided text accurately and naturally, preserving the original tone, register, and style. Output only the translated text without explanations unless asked.",
+  "prompt_template": "Translate the following text to {{globals.lang}}:\n\n{{input}}",
+  "context_mode": "fresh",
+  "require_input": true,
+  "input_hint": "Enter the text to translate. Set globals.lang first, e.g. /set lang Spanish",
+  "output": {
+    "include_in_context": false,
+    "display_format": "markdown"
+  }
+}

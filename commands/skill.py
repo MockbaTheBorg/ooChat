@@ -1,0 +1,144 @@
+"""Skill command for ooChat.
+
+Command: /skill
+Description: Invoke a skill (JSON prompt template) by name.
+Parameters: [<skill_name> [prompt]]
+Shortcut: "%" so  %name prompt  is equivalent to  /skill name prompt
+
+Usage
+-----
+  /skill                  List all loaded skills
+  /skill <name>           Show skill info without invoking
+  /skill <name> <prompt>  Invoke skill with prompt
+  %<name> <prompt>        Shortcut form
+"""
+
+from modules.api import APIError, send_chat
+from modules.context import Context
+from modules.skills import interpolate_template
+from modules.thinking import process_assistant_response
+
+
+def register(chat):
+    """Register the /skill command."""
+
+    def skill_handler(chat, args):
+        args = args.strip()
+
+        # ── No args: list skills ──────────────────────────────────────────────
+        if not args:
+            skills = chat.skills.list_skills()
+            if not skills:
+                return {
+                    "display": "No skills loaded. Place .json skill files in the skills/ directory.\n",
+                    "context": None,
+                }
+            lines = ["\n=== Loaded Skills ===\n"]
+            lines.append(f"{'Name':<20} {'Context':<14} {'Description'}")
+            lines.append("-" * 70)
+            for s in skills:
+                lines.append(f"{s.name:<20} {s.context_mode:<14} {s.description[:35]}")
+            lines.append("\nUsage: /skill <name> <prompt>   or   %<name> <prompt>\n")
+            return {"display": "\n".join(lines), "context": None}
+
+        parts = args.split(None, 1)
+        name = parts[0]
+        input_text = parts[1].strip() if len(parts) > 1 else ""
+
+        skill = chat.skills.get(name)
+        if not skill:
+            available = ", ".join(chat.skills.names()) or "none"
+            return {
+                "display": f"Unknown skill: '{name}'\nAvailable: {available}\n",
+                "context": None,
+            }
+
+        # ── Name only (no prompt): show skill info ────────────────────────────
+        if not input_text and not args.endswith(" "):
+            # Distinguish "%name" (info) vs "%name " (invoke with empty)
+            lines = [
+                f"\n=== Skill: {skill.name} ===",
+                f"Description : {skill.description}",
+                f"Version     : {skill.version}",
+                f"Author      : {skill.author or '—'}",
+                f"Context mode: {skill.context_mode}",
+                f"In context  : {skill.include_in_context}",
+                f"Require input: {skill.require_input}",
+            ]
+            if skill.system_prompt:
+                lines.append(f"System      : {skill.system_prompt[:80]}{'…' if len(skill.system_prompt) > 80 else ''}")
+            lines.append(f"Template    : {skill.prompt_template[:80]}{'…' if len(skill.prompt_template) > 80 else ''}")
+            if skill.require_input:
+                lines.append(f"\nHint: {skill.input_hint}")
+            lines.append("")
+            return {"display": "\n".join(lines), "context": None}
+
+        # ── Input required but not given ──────────────────────────────────────
+        if not input_text and skill.require_input:
+            return {
+                "display": f"Skill '{name}' requires input.\nHint: {skill.input_hint}\n",
+                "context": None,
+            }
+
+        # ── Interpolate templates ─────────────────────────────────────────────
+        prompt = interpolate_template(skill.prompt_template, input_text)
+        system = (
+            interpolate_template(skill.system_prompt, input_text)
+            if skill.system_prompt else None
+        )
+
+        # ── Build message list for the API call ───────────────────────────────
+        if skill.context_mode == "fresh":
+            # Isolated context; optionally seeded with skill's system prompt
+            temp_ctx = Context(system_prompt=system)
+            temp_ctx.add_user(prompt)
+            messages = temp_ctx.get_messages()
+
+        elif skill.context_mode == "inject_system" and system:
+            # Existing history but with skill's system prompt overriding
+            existing = chat.context.get_messages()
+            non_system = [m for m in existing if m["role"] != "system"]
+            messages = [{"role": "system", "content": system}] + non_system
+            messages.append({"role": "user", "content": prompt})
+
+        else:
+            # inherit: use conversation history as-is, append user turn
+            messages = list(chat.context.get_messages())
+            messages.append({"role": "user", "content": prompt})
+
+        # ── Call the model (streaming) ────────────────────────────────────────
+        model = chat.GLOBALS.get("model")
+        response_text = ""
+        try:
+            chat.renderer.start_response()
+            for chunk in send_chat(model, messages, stream=True):
+                content = chunk.get("content", "")
+                if content:
+                    chat.renderer.stream_chunk(content)
+                    response_text += content
+
+            display_text, context_text, _ = process_assistant_response(
+                response_text, include_blocks=True
+            )
+            chat.renderer.end_response(display_text)
+
+        except APIError as e:
+            print(f"\nAPI error in skill '{name}': {e}")
+            return {"display": None, "context": None}
+
+        # ── Persist to context if requested ──────────────────────────────────
+        if skill.include_in_context:
+            chat.context.add_user(prompt)
+            chat.context.add_assistant(context_text)
+            chat.session.save()
+
+        # Signal to _chat_turn that we handled everything
+        return {"display": None, "context": None}
+
+    chat.add_command(
+        name="/skill",
+        handler=skill_handler,
+        shortcut="%",
+        description="Invoke a skill prompt template",
+        usage="/skill [name [prompt]]  or  %name [prompt]",
+    )

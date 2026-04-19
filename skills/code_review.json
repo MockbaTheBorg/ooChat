@@ -1,0 +1,15 @@
+{
+  "name": "code_review",
+  "description": "Thorough code review: bugs, security, style, and performance",
+  "version": "1.0.0",
+  "author": "ooChat",
+  "system_prompt": "You are an expert code reviewer. Analyze the provided code for bugs, security vulnerabilities, performance issues, and style violations. Provide specific, actionable feedback with references to the relevant lines where possible. Structure your review with clear sections.",
+  "prompt_template": "Please review the following code:\n\n{{input}}",
+  "context_mode": "inject_system",
+  "require_input": true,
+  "input_hint": "Paste the code you want reviewed",
+  "output": {
+    "include_in_context": true,
+    "display_format": "markdown"
+  }
+}

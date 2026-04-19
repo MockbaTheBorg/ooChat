@@ -18,6 +18,7 @@ DEFAULTS = {
     'max_tool_output_chars': 16000,
     'tool_timeout': 120,
     'default_max_tokens': 32768,
+    'system_prompt': None,  # Default system prompt (None = no system prompt)
 }
 
 # Runtime GLOBALS dictionary (initialized with defaults, updated by config/CLI)
@@ -41,6 +42,11 @@ def set_global(key: str, value):
         GLOBALS[key] = value
     else:
         raise KeyError(f"Unknown global key: {key}")
+
+
+def update_system_prompt(prompt: str | None) -> None:
+    """Update system_prompt in GLOBALS (accepts None to clear)."""
+    GLOBALS['system_prompt'] = prompt
 
 
 def get_global(key: str, default=None):
