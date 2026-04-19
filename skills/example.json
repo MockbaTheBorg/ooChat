@@ -1,18 +1,13 @@
 {
   "name": "example",
-  "description": "Example skill demonstrating the JSON skill format",
+  "description": "Example skill demonstrating the JSON skill format - echoes input with context info",
   "version": "1.0.0",
   "author": "ooChat",
-
-  "system_prompt": "You are a helpful assistant. This is an example system prompt injected per-turn when the skill is invoked.",
-
-  "prompt_template": "Hello! The user said: {{input}}\n\nToday is {{date}}. Current model: {{globals.model}}. User home: {{env.HOME}}.",
-
+  "system_prompt": "You are an example skill demonstration assistant. Your task is to show how skills work by processing the user's input and responding in a structured way. Always acknowledge what you received and provide a clear, formatted response showing the skill is working correctly.",
+  "prompt_template": "Process this input as an example skill demonstration: {{input}}\n\n[Context: Today is {{date}}, model is {{globals.model}}]",
   "context_mode": "inject_system",
-
   "require_input": true,
   "input_hint": "Enter any text to test the example skill",
-
   "output": {
     "include_in_context": false,
     "display_format": "markdown"
