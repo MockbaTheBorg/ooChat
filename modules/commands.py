@@ -272,7 +272,6 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
     registry.add_command(
         name="/?",
         handler=_help_handler,
-        shortcut="?",
         description="Show help table of all commands",
     )
 
