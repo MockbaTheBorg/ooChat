@@ -278,7 +278,7 @@ def execute_tool(tool: Dict[str, Any], arguments: Dict[str, Any],
             output += f"\nStderr: {result.stderr}"
 
         # Truncate output
-        max_chars = globals_module.GLOBALS.get("max_tool_output_chars", 16000)
+        max_chars = globals_module.GLOBALS.get("max_tool_output_chars", 16384)
         if len(output) > max_chars:
             output = output[:max_chars] + "... (truncated)"
 

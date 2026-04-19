@@ -28,7 +28,13 @@ def register(chat):
         count = chat.buffer.count()
         files = chat.buffer.get_files()
 
-        # For now, clear directly (confirmation could be added)
+        # Ask for confirmation before clearing the buffer
+        confirm = input(
+            f"Clear attachment buffer ({count} file(s)). Proceed? [y/N]: "
+        ).strip().lower()
+        if confirm != 'y':
+            return {"display": "Clear cancelled.\n", "context": None}
+
         chat.buffer.clear()
 
         file_list = ", ".join(f.name for f in files)

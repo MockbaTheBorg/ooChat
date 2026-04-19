@@ -71,6 +71,15 @@ def register(chat):
                 "context": None,
             }
 
+        # Ask for confirmation if compacting will modify the session
+        non_system_msgs = [m for m in messages if m.role != "system"]
+        if non_system_msgs:
+            confirm = input(
+                "Compacting will summarize older conversation and modify session context. Proceed? [y/N]: "
+            ).strip().lower()
+            if confirm != 'y':
+                return {"display": "Compaction cancelled.\n", "context": None}
+
         # Create summary prompt
         compact_text = "\n".join(f"{m.role}: {m.content}" for m in compact_msgs)
         summary_prompt = f"""Summarize the following conversation in a concise way that preserves key information:
@@ -109,9 +118,17 @@ Provide a brief summary of the main topics discussed and any important conclusio
             for msg in keep_msgs:
                 new_context.messages.append(msg)
 
-            # Update context
+            # Update context and save session
             old_count = chat.context.get_message_count()
             chat.context = new_context
+            # Ensure session references the new context and persist
+            try:
+                if getattr(chat, 'session', None):
+                    chat.session.context = chat.context
+                    chat.session.save()
+            except Exception:
+                # Best-effort save; ignore failures here to avoid crashing
+                pass
             new_count = chat.context.get_message_count()
 
             return {

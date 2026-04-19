@@ -15,7 +15,7 @@ DEFAULTS = {
     'enable_tools': True,
     'show_thinking': True,
     'add_thinking_to_context': True,
-    'max_tool_output_chars': 16000,
+    'max_tool_output_chars': 16384,
     'tool_timeout': 120,
     'default_max_tokens': 32768,
     'system_prompt': None,  # Default system prompt (None = no system prompt)

@@ -100,10 +100,17 @@ Configuration is loaded in order (later overrides earlier):
   "enable_tools": true,
   "show_thinking": true,
   "add_thinking_to_context": true,
-  "max_tool_output_chars": 16000,
+  "max_tool_output_chars": 16384,
   "tool_timeout": 120,
   "default_max_tokens": 32768
 }
+
+Tool output truncation
+- Full command/tool output is shown in the UI display. However, when outputs
+  are added to the AI context (i.e., when not using `--silent`), they are
+  truncated to `max_tool_output_chars` characters (default 16384). Adjust
+  this value in your config file or at runtime via
+  `modules.globals.GLOBALS['max_tool_output_chars']`.
 ```
 
 ## Directory Structure

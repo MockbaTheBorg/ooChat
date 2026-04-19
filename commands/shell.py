@@ -54,12 +54,15 @@ def register(chat):
             if result.returncode != 0:
                 body = f"Exit code: {result.returncode}\n" + body
 
+            # Respect configured maximum characters for tool/context output
+            max_chars = int(chat.GLOBALS.get("max_tool_output_chars", 16384))
+
             if silent:
                 display = f"```\n{body}```\n"
                 context = None
             else:
                 display = f"---\n{body}---\n"
-                context = f"Shell command executed: {args}\nOutput: {output[:500]}"
+                context = f"Shell command executed: {args}\nOutput: {output[:max_chars]}"
 
             return {
                 "display": display,
@@ -93,6 +96,9 @@ def register(chat):
             "**Default behavior (no `--silent`):** output is wrapped in `---` "
             "delimiters and added to the AI context, triggering a conversation "
             "redraw.\n\n"
+            "Note: When added to the AI context the output is truncated to "
+            "the `max_tool_output_chars` value configured in `modules.globals` "
+            "(default 16384).\n\n"
             "**Examples:**\n"
             "```\n"
             "!ls -la\n"
