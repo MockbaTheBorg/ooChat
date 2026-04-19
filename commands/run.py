@@ -1,9 +1,10 @@
 """Run command for ooChat.
 
 Command: /run
-Description: Manually executes a tool and optionally skips adding the result to model context.
-Parameters: [--nocontext] <tool_name> [tool_arguments_json]
+Description: Manually executes a tool and adds the result to model context by default.
+Parameters: [--silent] <tool_name> [tool_arguments_json]
 Shortcut: "$" (so the user can type $tool_name {"key":"value"})
+With --silent: output is shown but NOT added to context and NOT wrapped in ---.
 """
 
 import json
@@ -26,17 +27,17 @@ def register(chat):
 
         if not args:
             return {
-                "display": "Usage: /run [--nocontext] <tool_name> [json_args]\n"
-                           "       $<tool_name> [json_args]  (shortcut)\n"
+                "display": "Usage: `/run [--silent] <tool_name> [json_args]`\n"
+                           "       `$<tool_name> [json_args]`  (shortcut)\n"
                            "Executes a tool manually.\n",
                 "context": None,
             }
 
-        # Parse --nocontext flag
-        no_context = False
-        if args.startswith("--nocontext "):
-            no_context = True
-            args = args[len("--nocontext "):].strip()
+        # Parse --silent flag
+        silent = False
+        if args.startswith("--silent "):
+            silent = True
+            args = args[len("--silent "):].strip()
 
         # Parse tool name and arguments
         parts = args.split(None, 1)
@@ -65,16 +66,23 @@ def register(chat):
         try:
             result = chat.execute_tool(tool_name, tool_args)
 
-            display = f"Tool: {tool_name}\n"
-            display += f"Arguments: {json.dumps(tool_args)}\n"
-            display += f"Result:\n{result['output']}\n"
+            body = f"Tool: {tool_name}\n"
+            body += f"Arguments: {json.dumps(tool_args)}\n"
+            body += f"Result:\n{result['output']}\n"
 
             if result.get("error"):
-                display += f"\nError: {result['error']}\n"
+                body += f"\nError: {result['error']}\n"
+
+            if silent:
+                display = body
+                context = None
+            else:
+                display = f"---\n{body}---\n"
+                context = f"Tool {tool_name} executed. Result: {result['output'][:500]}"
 
             return {
                 "display": display,
-                "context": None if no_context else f"Tool {tool_name} executed. Result: {result['output'][:500]}",
+                "context": context,
             }
 
         except Exception as e:
@@ -88,5 +96,24 @@ def register(chat):
         handler=run_handler,
         shortcut="$",
         description="Execute a tool manually",
-        usage="[--nocontext] <tool_name> [json_args]",
+        usage="[--silent] <tool_name> [json_args]",
+        long_help=(
+            "Manually invokes a registered tool outside of the normal AI tool-call "
+            "flow.\n\n"
+            "**Usage:** `/run [--silent] <tool_name> [json_args]`\n"
+            "**Shortcut:** `$<tool_name> [json_args]`\n\n"
+            "- `tool_name` — name of the tool (see `/tools`)\n"
+            "- `json_args` — optional JSON object of tool arguments\n"
+            "- `--silent` — show output without adding it to context or "
+            "wrapping it in `---`\n\n"
+            "**Default behavior (no `--silent`):** output is wrapped in `---` "
+            "delimiters and added to the AI context so the model can see the "
+            "result.\n\n"
+            "**Examples:**\n"
+            "```\n"
+            "/run list_directory {}\n"
+            "$read_file {\"path\": \"README.md\"}\n"
+            "/run --silent git_status\n"
+            "```"
+        ),
     )

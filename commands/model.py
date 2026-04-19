@@ -65,7 +65,7 @@ def register(chat):
             return {
                 "display": "\nCould not enumerate models from server.\n"
                 "Please enter model name manually:\n"
-                " /model <model_name>\n"
+                " `/model <model_name>`\n"
                 f"Current model: {globals_module.GLOBALS.get('model', 'unknown')}\n",
                 "context": None,
             }
@@ -96,4 +96,19 @@ def register(chat):
         handler=model_handler,
         description="Switch model or list available models",
         usage="[model_name | #n]",
+        long_help=(
+            "Lists available models or switches the active model.\n\n"
+            "**Usage:**\n"
+            "- `/model` — list all models from the server in a numbered table\n"
+            "- `/model <name>` — switch to a specific model by name\n"
+            "- `/model #n` — switch to model number `n` from the last listing\n\n"
+            "**Examples:**\n"
+            "```\n"
+            "/model\n"
+            "/model llama3.2\n"
+            "/model #2\n"
+            "```\n\n"
+            "If the server cannot enumerate models, you will be prompted to "
+            "enter a model name manually."
+        ),
     )

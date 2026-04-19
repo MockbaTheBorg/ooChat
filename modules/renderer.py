@@ -210,11 +210,15 @@ class Renderer:
             if visible_text:
                 self._buffer.append(visible_text)
 
-    def end_response(self, final_text: str = None) -> None:
+    def end_response(self, final_text: str = None,
+                       messages: List[Dict[str, Any]] = None) -> None:
         """End response rendering.
 
         Args:
             final_text: Complete final text (for thinking block stripping, etc.).
+            messages: Full conversation messages including the current assistant
+                response.  When provided in hybrid mode the entire conversation
+                is redrawn so no raw streamed text remains on screen.
         """
         self._streaming = False
 
@@ -242,10 +246,18 @@ class Renderer:
 
         elif self.mode == "hybrid":
             if text.strip():
-                # Redraw: clear previous streamed output then show thinking
-                # blocks above the final markdown content so they appear
-                # before the response in the final view.
-                self._redraw_markdown(text)
+                if messages:
+                    # Clear screen and redraw the full conversation so no raw
+                    # streamed text remains.  Thinking blocks are already
+                    # stored in the context message; discard the ones
+                    # accumulated in the streaming buffer to avoid duplicates.
+                    if sys.stdout.isatty() and RICH_AVAILABLE:
+                        get_console().clear()
+                    self._thinking_blocks = []
+                    redraw_conversation(messages, self, show_header=False)
+                else:
+                    # Fallback: redraw only the current response
+                    self._redraw_markdown(text)
 
         # Note: thinking blocks collected during streaming are not displayed
         # here to avoid coupling rendering with thinking presentation.
@@ -354,22 +366,31 @@ class Renderer:
 
 
 def redraw_conversation(messages: List[Dict[str, Any]],
-                        renderer: Renderer = None) -> None:
+                        renderer: Renderer = None,
+                        show_header: bool = True) -> None:
     """Redraw entire conversation using current render mode.
 
     Args:
         messages: List of message dictionaries.
         renderer: Renderer instance. Creates new if None.
+        show_header: Print the '=== Conversation ===' banner (default True).
+            Pass False for seamless automatic redraws (e.g. hybrid mode).
     """
     if renderer is None:
         renderer = Renderer()
 
-    # Clear screen
-    if sys.stdout.isatty() and RICH_AVAILABLE:
+    # Clear screen (only when invoked standalone; callers that already cleared
+    # the screen, e.g. end_response in hybrid mode, can skip this)
+    if show_header and sys.stdout.isatty() and RICH_AVAILABLE:
         console = get_console()
         console.clear()
 
-    print("=== Conversation ===\n")
+    if show_header:
+        logo = globals_module.GLOBALS.get('logo')
+        if logo:
+            print(logo)
+        else:
+            print("=== Conversation ===\n")
 
     for msg in messages:
         role = msg.get("role", "")
@@ -423,7 +444,8 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 else:
                     print("---")
             else:
-                print(f"Assistant: {render_content}\n")
+                # stream mode: plain text
+                render_stream(render_content + "\n")
                 print("---")
         elif role == "system":
             # Skip system messages in redraw

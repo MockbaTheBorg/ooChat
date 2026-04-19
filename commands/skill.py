@@ -33,12 +33,14 @@ def register(chat):
                     "display": "No skills loaded. Place .json skill files in the skills/ directory.\n",
                     "context": None,
                 }
-            lines = ["\n=== Loaded Skills ===\n"]
-            lines.append(f"{'Name':<20} {'Context':<14} {'Description'}")
-            lines.append("-" * 70)
+            lines = ["## Loaded Skills", ""]
+            lines.append("| Name | Context | Description |")
+            lines.append("|------|---------|-------------|")
             for s in skills:
-                lines.append(f"{s.name:<20} {s.context_mode:<14} {s.description[:35]}")
-            lines.append("\nUsage: /skill <name> <prompt>   or   %<name> <prompt>\n")
+                lines.append(f"| `{s.name}` | `{s.context_mode}` | {s.description[:50]} |")
+            lines.append("")
+            lines.append("Usage: `/skill <name> <prompt>`   or   `%<name> <prompt>`")
+            lines.append("")
             return {"display": "\n".join(lines), "context": None}
 
         parts = args.split(None, 1)
@@ -57,19 +59,23 @@ def register(chat):
         if not input_text and not args.endswith(" "):
             # Distinguish "%name" (info) vs "%name " (invoke with empty)
             lines = [
-                f"\n=== Skill: {skill.name} ===",
-                f"Description : {skill.description}",
-                f"Version     : {skill.version}",
-                f"Author      : {skill.author or '—'}",
-                f"Context mode: {skill.context_mode}",
-                f"In context  : {skill.include_in_context}",
-                f"Require input: {skill.require_input}",
+                f"## Skill: {skill.name}", "",
+                f"| Field | Value |",
+                f"|-------|-------|" ,
+                f"| **Description** | {skill.description} |",
+                f"| **Version** | `{skill.version}` |",
+                f"| **Author** | {skill.author or '—'} |",
+                f"| **Context mode** | `{skill.context_mode}` |",
+                f"| **In context** | `{skill.include_in_context}` |",
+                f"| **Require input** | `{skill.require_input}` |",
             ]
             if skill.system_prompt:
-                lines.append(f"System      : {skill.system_prompt[:80]}{'…' if len(skill.system_prompt) > 80 else ''}")
-            lines.append(f"Template    : {skill.prompt_template[:80]}{'…' if len(skill.prompt_template) > 80 else ''}")
+                preview = skill.system_prompt[:80] + ('…' if len(skill.system_prompt) > 80 else '')
+                lines.append(f"| **System** | {preview} |")
+            tmpl_preview = skill.prompt_template[:80] + ('…' if len(skill.prompt_template) > 80 else '')
+            lines.append(f"| **Template** | {tmpl_preview} |")
             if skill.require_input:
-                lines.append(f"\nHint: {skill.input_hint}")
+                lines.append(f"\n**Hint:** {skill.input_hint}")
             lines.append("")
             return {"display": "\n".join(lines), "context": None}
 
@@ -141,4 +147,19 @@ def register(chat):
         shortcut="%",
         description="Invoke a skill prompt template",
         usage="/skill [name [prompt]]  or  %name [prompt]",
+        long_help=(
+            "Loads and invokes JSON skill templates from the `skills/` directory.\n\n"
+            "**Usage:**\n"
+            "- `/skill` — list all loaded skills\n"
+            "- `/skill <name>` — show skill details without invoking\n"
+            "- `/skill <name> <prompt>` — invoke skill with the given prompt\n"
+            "- `%<name> <prompt>` — shortcut form\n\n"
+            "**Context modes:**\n"
+            "- `fresh` — isolated context, no conversation history\n"
+            "- `inherit` — uses existing conversation history\n"
+            "- `inject_system` — existing history with skill's system prompt\n\n"
+            "Skills that have `include_in_context: true` will add the exchange "
+            "to the conversation history.\n\n"
+            "**Example:** `%summarize Explain the key points`"
+        ),
     )

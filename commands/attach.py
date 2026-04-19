@@ -25,7 +25,7 @@ def register(chat):
 
         if not args:
             return {
-                "display": "Usage: /attach <filename>\n"
+                "display": "Usage: `/attach <filename>`\n"
                            "Attaches a text file to the next message.\n",
                 "context": None,
             }
@@ -61,4 +61,17 @@ def register(chat):
         handler=attach_handler,
         description="Attach a text file to next message",
         usage="<filename>",
+        long_help=(
+            "Reads a text file from disk and appends its contents to the "
+            "attachment buffer. The buffer is automatically prepended to your "
+            "next message and then cleared.\n\n"
+            "**Usage:** `/attach <filename>`\n\n"
+            "**Examples:**\n"
+            "```\n"
+            "/attach notes.txt\n"
+            "/attach /home/user/docs/report.md\n"
+            "```\n\n"
+            "Use `/buffer` to preview the current buffer contents, "
+            "and `/clear` to discard them."
+        ),
     )

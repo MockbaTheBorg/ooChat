@@ -29,17 +29,16 @@ def register(chat):
             show = globals_module.GLOBALS.get("show_thinking", True)
             context = globals_module.GLOBALS.get("add_thinking_to_context", True)
 
-            lines = ["\n=== Thinking Settings ===\n"]
-            lines.append(f"Display: {'ON' if show else 'OFF'}")
-            lines.append(f"Context: {'INCLUDED' if context else 'EXCLUDED'}")
+            lines = ["## Thinking Settings", ""]
+            lines.append(f"**Display:** {'ON' if show else 'OFF'}  ")
+            lines.append(f"**Context:** {'included' if context else 'excluded'}  ")
             lines.append("")
-            lines.append("Commands:")
-            lines.append("  /think on     - Show thinking blocks")
-            lines.append("  /think off    - Hide thinking blocks")
-            lines.append("  /think show   - Same as 'on'")
-            lines.append("  /think hide   - Same as 'off'")
-            lines.append("  /think context    - Include thinking in model context")
-            lines.append("  /think nocontext  - Exclude thinking from model context")
+            lines.append("| Argument | Effect |")
+            lines.append("|----------|--------|")
+            lines.append("| `on` / `show` | Display thinking blocks |")
+            lines.append("| `off` / `hide` | Hide thinking blocks |")
+            lines.append("| `context` | Include thinking in model context |")
+            lines.append("| `nocontext` | Exclude thinking from model context |")
             lines.append("")
 
             return {"display": "\n".join(lines), "context": None}
@@ -83,4 +82,17 @@ def register(chat):
         handler=think_handler,
         description="Control thinking block display and context",
         usage="[on|off|show|hide|context|nocontext]",
+        long_help=(
+            "Controls how reasoning/thinking blocks emitted by the model are "
+            "handled.\n\n"
+            "**Usage:** `/think [on|off|show|hide|context|nocontext]`\n\n"
+            "Called without arguments, shows current settings.\n\n"
+            "**Display options:**\n"
+            "- `on` / `show` — display thinking blocks above the response\n"
+            "- `off` / `hide` — suppress thinking blocks from the output\n\n"
+            "**Context options:**\n"
+            "- `context` — include thinking content in the message history "
+            "sent to the model\n"
+            "- `nocontext` — strip thinking content from history (saves tokens)"
+        ),
     )

@@ -29,7 +29,7 @@ def register(chat):
                     "context": None,
                 }
             return {
-                "display": "No system prompt set.\nUse /system <text> to set one.\n",
+                "display": "No system prompt set.\nUse `/system <text>` to set one.\n",
                 "context": None,
             }
 
@@ -62,6 +62,16 @@ def register(chat):
         handler=system_handler,
         description="Get or set the session system prompt",
         usage="/system [--reset | --clear | text]",
+        long_help=(
+            "Gets, sets, resets, or clears the session system prompt.\n\n"
+            "**Usage:**\n"
+            "- `/system` — show the current system prompt\n"
+            "- `/system <text>` — set a new system prompt for this session\n"
+            "- `/system --reset` — restore the default system prompt from config "
+            "(clears if no default is configured)\n"
+            "- `/system --clear` — remove the system prompt entirely\n\n"
+            "Changes take effect immediately and are saved with the session."
+        ),
     )
 
 

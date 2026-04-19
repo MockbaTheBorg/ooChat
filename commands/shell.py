@@ -1,9 +1,10 @@
 """Shell command for ooChat.
 
 Command: /shell
-Description: Runs a local shell command entered explicitly by the user from the chat TUI.
-Parameters: <shell_command> (the rest of the line)
+Description: Runs a local shell command and adds the result to model context by default.
+Parameters: [--silent] <shell_command> (the rest of the line)
 Shortcut: "!" (so the user can type !ls -la)
+With --silent: output is shown but NOT added to context and NOT wrapped in ---.
 """
 
 import subprocess
@@ -24,10 +25,16 @@ def register(chat):
         """
         args = args.strip()
 
+        # Parse --silent flag
+        silent = False
+        if args.startswith("--silent "):
+            silent = True
+            args = args[len("--silent "):].strip()
+
         if not args:
             return {
-                "display": "Usage: /shell <command>\n"
-                           "       !<command>  (shortcut)\n"
+                "display": "Usage: `/shell [--silent] <command>`\n"
+                           "       `! [--silent] <command>`  (shortcut)\n"
                            "Executes a shell command.\n",
                 "context": None,
             }
@@ -43,14 +50,20 @@ def register(chat):
 
             output = result.stdout or result.stderr or "(no output)"
 
-            display = f"```\n{output}\n```\n"
-
+            body = f"$ {args}\n{output}\n"
             if result.returncode != 0:
-                display = f"Exit code: {result.returncode}\n" + display
+                body = f"Exit code: {result.returncode}\n" + body
+
+            if silent:
+                display = f"```\n{body}```\n"
+                context = None
+            else:
+                display = f"---\n{body}---\n"
+                context = f"Shell command executed: {args}\nOutput: {output[:500]}"
 
             return {
                 "display": display,
-                "context": f"Shell command executed: {args}\nOutput: {output[:500]}",
+                "context": context,
             }
 
         except subprocess.TimeoutExpired:
@@ -69,5 +82,22 @@ def register(chat):
         handler=shell_handler,
         shortcut="!",
         description="Execute a shell command",
-        usage="<command>",
+        usage="[--silent] <command>",
+        long_help=(
+            "Runs a shell command and optionally injects the output into the AI "
+            "context.\n\n"
+            "**Usage:** `/shell [--silent] <command>`\n"
+            "**Shortcut:** `!<command>`\n\n"
+            "- `--silent` — show output without adding it to context or "
+            "wrapping it in `---`\n\n"
+            "**Default behavior (no `--silent`):** output is wrapped in `---` "
+            "delimiters and added to the AI context, triggering a conversation "
+            "redraw.\n\n"
+            "**Examples:**\n"
+            "```\n"
+            "!ls -la\n"
+            "/shell cat README.md\n"
+            "! --silent pwd\n"
+            "```"
+        ),
     )

@@ -29,33 +29,32 @@ def register(chat):
                 "context": None,
             }
 
-        lines = ["\n=== Available Tools ===\n"]
-
-        # Show guardrails mode
         guardrails = globals_module.GLOBALS.get("guardrails_mode", "confirm-destructive")
-        lines.append(f"Guardrails mode: {guardrails}")
+
+        lines = ["## Available Tools", ""]
+        lines.append(f"**Guardrails:** `{guardrails}`")
         lines.append("")
+        lines.append("| Tool | Flags | Description |")
+        lines.append("|------|-------|-------------|")
 
         for tool in tools_list:
             name = tool.get("name", "unknown")
-            desc = tool.get("description", "No description")[:60]
+            desc = tool.get("description", "No description")
             read_only = tool.get("read_only", False)
             destructive = tool.get("destructive", False)
 
             flags = []
             if read_only:
-                flags.append("read-only")
+                flags.append("`read-only`")
             if destructive:
-                flags.append("destructive")
+                flags.append("`destructive`")
+            flag_str = " ".join(flags) if flags else ""
 
-            flag_str = f" [{', '.join(flags)}]" if flags else ""
+            lines.append(f"| `{name}` | {flag_str} | {desc} |")
 
-            lines.append(f"  {name}{flag_str}")
-            lines.append(f"    {desc}")
-            lines.append("")
-
-        lines.append("Use: /run <tool_name> [json_args]")
-        lines.append("     $<tool_name> [json_args]  (shortcut)\n")
+        lines.append("")
+        lines.append("Run manually: `/run <tool_name> [json_args]` or `$<tool_name>`")
+        lines.append("")
 
         return {"display": "\n".join(lines), "context": None}
 
@@ -63,4 +62,15 @@ def register(chat):
         name="/tools",
         handler=tools_handler,
         description="List available tools",
+        long_help=(
+            "Lists all tools registered and available for the AI to call, along "
+            "with their descriptions and safety flags.\n\n"
+            "**Flags:**\n"
+            "- `read-only` — tool only reads data, never modifies anything\n"
+            "- `destructive` — tool can make irreversible changes; subject to "
+            "guardrails confirmation\n\n"
+            "Also shows the current guardrails mode.\n\n"
+            "To invoke a tool manually, use `/run <tool_name> [json_args]` "
+            "or the `$` shortcut."
+        ),
     )

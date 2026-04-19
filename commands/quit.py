@@ -20,6 +20,8 @@ def register(chat):
         return handler
 
     chat.add_command(name="/exit", handler=make_alias("/exit"),
-                     description="Alias for /quit")
+                     description="Alias for /quit",
+                     long_help="Saves the session and exits. Alias for `/quit`.")
     chat.add_command(name="/bye", handler=make_alias("/bye"),
-                     description="Alias for /quit")
+                     description="Alias for /quit",
+                     long_help="Saves the session and exits. Alias for `/quit`.")

@@ -31,4 +31,12 @@ def register(chat):
         name="/redraw",
         handler=redraw_handler,
         description="Redraw conversation with current render mode",
+        long_help=(
+            "Clears the terminal and redraws the entire conversation using the "
+            "current render mode.\n\n"
+            "Useful after switching render modes with `/render`, or to clean up "
+            "garbled output.\n\n"
+            "Command outputs (e.g. from `/?` or `/status`) are ephemeral and "
+            "will not appear after a redraw unless they were added to context."
+        ),
     )

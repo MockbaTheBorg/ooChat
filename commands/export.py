@@ -77,4 +77,12 @@ def register(chat):
         handler=export_handler,
         description="Export session as Markdown",
         usage="[filename]",
+        long_help=(
+            "Exports the full conversation (all messages) to a Markdown file.\n\n"
+            "**Usage:** `/export [filename]`\n\n"
+            "- If `filename` is omitted, a timestamped file is created: "
+            "`export_<session_id>_<timestamp>.md`\n\n"
+            "The file includes session metadata (model, session ID, export time) "
+            "followed by all messages formatted as Markdown sections."
+        ),
     )

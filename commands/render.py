@@ -53,6 +53,17 @@ def register(chat):
     chat.add_command(
         name="/render",
         handler=render_handler,
-        description="Query or change render mode (stream|markdown|hybrid)",
+        description="Query or change render mode (stream / markdown / hybrid)",
         usage="[mode]",
+        long_help=(
+            "Shows or changes the output render mode.\n\n"
+            "**Usage:** `/render [mode]`\n\n"
+            "**Modes:**\n"
+            "- `stream` — plain text, printed in real time as the model responds\n"
+            "- `markdown` — buffers the full response then renders it with "
+            "Rich markdown formatting\n"
+            "- `hybrid` — streams plain text in real time, then redraws the "
+            "full response as markdown when complete (default)\n\n"
+            "Called without an argument, shows the current mode."
+        ),
     )

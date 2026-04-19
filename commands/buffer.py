@@ -40,4 +40,11 @@ def register(chat):
         name="/buffer",
         handler=buffer_handler,
         description="Show attachment buffer contents and files",
+        long_help=(
+            "Displays the names of all files currently in the attachment buffer "
+            "and their combined text content.\n\n"
+            "The attachment buffer is prepended to your next message when you "
+            "send it, then automatically cleared.\n\n"
+            "**Related commands:** `/attach`, `/clear`"
+        ),
     )

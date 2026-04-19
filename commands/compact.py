@@ -133,4 +133,15 @@ Provide a brief summary of the main topics discussed and any important conclusio
         handler=compact_handler,
         description="Compact context by summarizing older messages",
         usage="[keep_last]",
+        long_help=(
+            "Summarizes older conversation turns into a single compact summary "
+            "to reduce context size, while keeping the most recent turns "
+            "verbatim.\n\n"
+            "**Usage:** `/compact [keep_last]`\n\n"
+            "- `keep_last` — number of most-recent turns to keep unchanged "
+            "(default: **3**). Must be ≥ 1.\n\n"
+            "The model is called to generate the summary. The summary is "
+            "injected as a system message before the kept turns.\n\n"
+            "**Example:** `/compact 5` — keep the last 5 turns, summarize the rest."
+        ),
     )

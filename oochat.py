@@ -171,11 +171,12 @@ class ChatApp:
 
     # Convenience delegation for command modules that call `chat.add_command`
     def add_command(self, name: str, handler, shortcut: str = None,
-                    description: str = "", usage: str = "") -> None:
+                    description: str = "", usage: str = "",
+                    long_help: str = "") -> None:
         """Delegate command registration to the CommandRegistry."""
         self.registry.add_command(name=name, handler=handler,
                                   shortcut=shortcut, description=description,
-                                  usage=usage)
+                                  usage=usage, long_help=long_help)
 
     def run(self) -> None:
         """Run the main chat loop."""
@@ -205,8 +206,17 @@ class ChatApp:
             f"  {color_start}▝▀▆▆▀▘{color_end}  Type /? or /help for commands. Ctrl+C to exit.\n"
         ]
 
+        self.GLOBALS['logo'] = "\n".join(logo)
+
         for line in logo:
             print(line)
+
+        # If resuming a session with existing messages, redraw the conversation
+        # so the user can see the history before continuing.
+        existing_messages = self.context.get_messages()
+        non_system = [m for m in existing_messages if m.get("role") != "system"]
+        if non_system:
+            redraw_conversation(existing_messages, self.renderer)
 
         # Set up signal handler
         def signal_handler(sig, frame):
@@ -250,9 +260,19 @@ class ChatApp:
         if result is not None:
             # Command handled
             if result.get("display"):
-                print(result["display"])
+                from modules.renderer import render_markdown
+                if self.renderer.mode in ("hybrid", "markdown"):
+                    render_markdown(result["display"])
+                else:
+                    print(result["display"])
             if self._quit_requested:
                 return
+            # Add output to context and redraw if requested
+            if result.get("context"):
+                self.context.add_user(result["context"])
+                self.session.save()
+                from modules.renderer import redraw_conversation
+                redraw_conversation(self.context.get_messages(), self.renderer)
             return
 
         # Normal message - process through pre-filters
@@ -289,20 +309,19 @@ class ChatApp:
             # Process thinking blocks first so thinking is shown before response
             display_text, context_text, thinking_blocks = process_assistant_response(response_text, include_blocks=True)
 
-            # Render the (possibly filtered) display content
-            self.renderer.end_response(display_text)
-
-            # Renderer will display any collected thinking blocks during
-            # the final redraw, so no additional display is required here.
-
-            # Handle tool calls
+            # Handle tool calls (before adding to context – the intermediate
+            # assistant message that triggered tools is not persisted)
             if tool_calls:
+                self.renderer.end_response(display_text)
                 self._handle_tool_calls(tool_calls)
-                # After tool calls, get final response
                 return
 
-            # Add assistant response to context
+            # No tool calls: persist the response then render with a full
+            # conversation redraw so hybrid mode can replace streamed text.
             self.context.add_assistant(context_text)
+
+            # Render the (possibly filtered) display content
+            self.renderer.end_response(display_text, self.context.get_messages())
 
             # Apply post-filters
             _ = self.registry.apply_post_filters(context_text)
@@ -450,14 +469,10 @@ class ChatApp:
             # Process thinking blocks first so thinking is shown before response
             display_text, context_text, thinking_blocks = process_assistant_response(response_text, include_blocks=True)
 
-            # Render the (possibly filtered) display content
-            self.renderer.end_response(display_text)
-
-            # Renderer will display any collected thinking blocks during
-            # the final redraw, so no additional display is required here.
-
-            # Add assistant response to context
+            # Persist the response, then render with full conversation so
+            # hybrid mode can replace the streamed plain-text with markdown.
             self.context.add_assistant(context_text)
+            self.renderer.end_response(display_text, self.context.get_messages())
 
             self.session.save()
 

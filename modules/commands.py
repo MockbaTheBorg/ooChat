@@ -37,7 +37,7 @@ class CommandRegistry:
 
     def add_command(self, name: str, handler: CommandHandler,
                     shortcut: str = None, description: str = "",
-                    usage: str = "") -> None:
+                    usage: str = "", long_help: str = "") -> None:
         """Register a command.
 
         Args:
@@ -46,6 +46,7 @@ class CommandRegistry:
             shortcut: Optional shortcut key (e.g., '?' for /help).
             description: Brief description.
             usage: Usage string.
+            long_help: Detailed help text shown by /help <command>.
         """
         self._commands[name] = handler
         if shortcut:
@@ -54,6 +55,7 @@ class CommandRegistry:
             "description": description,
             "usage": usage,
             "shortcut": shortcut,
+            "long_help": long_help,
         }
 
     def remove_command(self, name: str) -> None:
@@ -163,6 +165,7 @@ class CommandRegistry:
                 "shortcut": info.get("shortcut"),
                 "description": info.get("description", ""),
                 "usage": info.get("usage", ""),
+                "long_help": info.get("long_help", ""),
             })
         return sorted(result, key=lambda x: x["name"])
 
@@ -240,19 +243,56 @@ class CommandRegistry:
 # Built-in command handlers
 def _help_handler(chat: Any, args: str) -> Dict[str, Any]:
     """Handle /? and /help commands."""
+    args = args.strip()
+
+    # /help <command> — show long help for a specific command
+    if args:
+        # Normalize: accept 'attach' or '/attach'
+        name = args if args.startswith("/") else f"/{args}"
+        # Also try '?' as the literal name for /?
+        candidates = [name, args]
+        info = None
+        for candidate in candidates:
+            found = next(
+                (c for c in chat.registry.list_commands() if c["name"] == candidate),
+                None,
+            )
+            if found:
+                info = found
+                break
+
+        if not info:
+            return {
+                "display": f"Unknown command: `{args}`\nUse `/?` to list all commands.\n",
+                "context": None,
+            }
+
+        lines = [f"## {info['name']}"]
+        if info.get("shortcut"):
+            lines.append(f"**Shortcut:** `{info['shortcut']}`")
+        if info.get("usage"):
+            lines.append(f"**Usage:** `{info['name']} {info['usage']}`")
+        lines.append(f"\n{info.get('long_help') or info.get('description') or '_No help available._'}")
+        lines.append("")
+        return {"display": "\n".join(lines), "context": None}
+
+    # /? or /help — full command table
     commands = chat.registry.list_commands()
 
-    lines = ["\n=== Commands ===\n"]
-    lines.append(f"{'Command':<15} {'Shortcut':<10} {'Description'}")
-    lines.append("-" * 60)
+    lines = ["## ooChat Commands", ""]
+    lines.append("| Command | Shortcut | Description |")
+    lines.append("|---------|----------|-------------|")
 
-    for cmd in commands:
+    for cmd in sorted(commands, key=lambda x: x["name"]):
         shortcut = cmd.get("shortcut") or ""
-        desc = cmd.get("description", "")[:40]
-        lines.append(f"{cmd['name']:<15} {shortcut:<10} {desc}")
+        shortcut_cell = f"`{shortcut}`" if shortcut else ""
+        desc = cmd.get("description", "")
+        lines.append(f"| `{cmd['name']}` | {shortcut_cell} | {desc} |")
 
-    lines.append("\nType a message to chat with the model.")
-    lines.append("Press Ctrl+C to exit.\n")
+    lines.append("")
+    lines.append("**Shortcuts:** `!<cmd>` for shell, `$<tool>` for tool run.")
+    lines.append("Tip: `/help <command>` for detailed help on any command.")
+    lines.append("")
 
     return {"display": "\n".join(lines), "context": None}
 
@@ -273,12 +313,22 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
         name="/?",
         handler=_help_handler,
         description="Show help table of all commands",
+        long_help=(
+            "Displays a table of all registered commands with their shortcuts and descriptions.\n\n"
+            "**Usage:** `/?` or `/help`\n\n"
+            "Pass a command name for detailed help:\n\n"
+            "```\n/help attach\n/help shell\n```"
+        ),
     )
 
     registry.add_command(
         name="/quit",
         handler=_quit_handler,
         description="Save session and exit",
+        long_help=(
+            "Saves the current session to disk and exits ooChat.\n\n"
+            "**Aliases:** `/exit`, `/bye`"
+        ),
     )
 
 

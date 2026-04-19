@@ -41,4 +41,10 @@ def register(chat):
         name="/clear",
         handler=clear_handler,
         description="Clear the attachment buffer",
+        long_help=(
+            "Removes all files from the attachment buffer without sending them.\n\n"
+            "Use this when you attached a file by mistake or no longer want it "
+            "included in your next message.\n\n"
+            "**Related commands:** `/attach`, `/buffer`"
+        ),
     )
