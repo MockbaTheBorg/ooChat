@@ -169,11 +169,33 @@ class ChatApp:
     def run(self) -> None:
         """Run the main chat loop."""
         self._running = True
+        # Clear the terminal screen on start
+        try:
+            os.system('cls' if os.name == 'nt' else 'clear')
+        except Exception:
+            pass
+        # Build colored logo; only emit ANSI sequences when stdout is a TTY
+        try:
+            support_color = sys.stdout.isatty()
+        except Exception:
+            support_color = False
 
-        print(f"\nooChat - TUI chat for ooProxy")
-        print(f"Model: {self.GLOBALS.get('model')}")
-        print(f"Session: {self.session.session_id}")
-        print(f"Type /? or /help for commands. Ctrl+C to exit.\n")
+        if support_color:
+            color_start = "\033[96m"  # bright cyan
+            color_end = "\033[0m"
+        else:
+            color_start = color_end = ""
+
+        logo = [
+            "\n",
+            f" {color_start}▐◢▇▆▆▇◣▌{color_end}  ooChat - TUI chat for ooProxy",
+            f" {color_start}▐█▚  ▞█▌{color_end} Model: {self.GLOBALS.get('model')}",
+            f" {color_start}◥██████◤{color_end} Session: {self.session.session_id}",
+            f"  {color_start}▝▀▆▆▀▘{color_end}  Type /? or /help for commands. Ctrl+C to exit.\n"
+        ]
+
+        for line in logo:
+            print(line)
 
         # Set up signal handler
         def signal_handler(sig, frame):
