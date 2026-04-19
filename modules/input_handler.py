@@ -197,7 +197,8 @@ class InputHandler:
     """Handles user input with prompt_toolkit."""
 
     def __init__(self, registry, history_file: str = None,
-                 multiline: bool = True, models: list = None, get_messages=None):
+                 multiline: bool = True, models: list = None, get_messages=None,
+                 mouse_support: Optional[bool] = None):
         """Initialize input handler.
 
         Args:
@@ -209,6 +210,10 @@ class InputHandler:
         self.registry = registry
         self.multiline = multiline
         self.models = models or []
+
+        # Mouse support: default to False to avoid capturing scroll events
+        # unless explicitly enabled (e.g., in a full TUI mode).
+        self.mouse_support = mouse_support if mouse_support is not None else False
 
         # Set up history
         if history_file is None:
@@ -242,7 +247,7 @@ class InputHandler:
             key_bindings=self.bindings,
             style=PROMPT_STYLE,
             multiline=self.multiline,
-            mouse_support=True,
+            mouse_support=self.mouse_support,
             prompt_continuation='... ',
         )
 
@@ -278,7 +283,7 @@ class InputHandler:
             self.session.history.append_string(text)
 
 
-def create_input_handler(registry, models: list = None, **kwargs) -> InputHandler:
+def create_input_handler(registry, models: list = None, mouse_support: Optional[bool] = None, **kwargs) -> InputHandler:
     """Create an input handler instance.
 
     Args:
@@ -289,4 +294,6 @@ def create_input_handler(registry, models: list = None, **kwargs) -> InputHandle
     Returns:
         InputHandler instance.
     """
-    return InputHandler(registry, models=models, **kwargs)
+    return InputHandler(registry, models=models, get_messages=kwargs.get('get_messages'),
+                        multiline=kwargs.get('multiline', True), history_file=kwargs.get('history_file'),
+                        mouse_support=mouse_support)

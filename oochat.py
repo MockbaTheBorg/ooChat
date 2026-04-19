@@ -148,11 +148,14 @@ class ChatApp:
             print(f"Session error: {e}")
             sys.exit(1)
 
-        # Create input handler and pass context accessor for paging
+        # Create input handler and pass context accessor for paging.
+        # Disable prompt_toolkit's mouse support to avoid interfering
+        # with terminal scrollback unless a full TUI is in use.
         self.input_handler = create_input_handler(
             self.registry,
             models=self._cached_models,
-            get_messages=lambda: self.session.context.get_messages() if self.session else []
+            get_messages=lambda: self.session.context.get_messages() if self.session else [],
+            mouse_support=False,
         )
 
         # Keep prompt-based input/rendering
