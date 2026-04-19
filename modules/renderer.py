@@ -403,10 +403,13 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 if show_thinking and parsed.thinking_blocks:
                     display_thinking(parsed.thinking_blocks)
 
-                # Decide what to render: include thinking in context if
-                # configured, otherwise render content stripped of tags.
-                add_to_context = globals_module.GLOBALS.get("add_thinking_to_context", True)
-                render_content = content if add_to_context else parsed.content
+                # For display we must NOT include thinking blocks inline
+                # (they were already shown above). Always render the
+                # stripped content so thinking doesn't appear twice.
+                render_content = parsed.content
+                # Context inclusion is a separate concern and is
+                # determined by the global setting; callers that build
+                # the context should consult this if needed.
             except Exception:
                 # Fallback: render raw content
                 render_content = content
