@@ -141,11 +141,16 @@ class ChatApp:
             # Load context from session
             self.context = session.context
 
-            # Apply system prompt from config/GLOBALS if context has none
-            configured_system = globals_module.GLOBALS.get("system_prompt")
-            if configured_system and not self.context.system_prompt:
-                self.context.add_system(configured_system)
-                self.context.system_prompt = configured_system
+            # If the resumed session has a stored system prompt, prefer it
+            # and propagate it into GLOBALS so commands/readers see the same
+            # value. Otherwise, fall back to configured GLOBALS value.
+            if self.context.system_prompt is not None:
+                globals_module.GLOBALS["system_prompt"] = self.context.system_prompt
+            else:
+                configured_system = globals_module.GLOBALS.get("system_prompt")
+                if configured_system and not self.context.system_prompt:
+                    self.context.add_system(configured_system)
+                    self.context.system_prompt = configured_system
 
             # Determine model selection. Priority:
             # 1. CLI arg (args.model)
