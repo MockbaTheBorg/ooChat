@@ -6,6 +6,7 @@ Parameters: [on|off|show|hide|context|nocontext] - if omitted, show current stat
 """
 
 from modules import globals as globals_module
+from modules.utils import format_table
 
 
 def register(chat):
@@ -33,12 +34,17 @@ def register(chat):
             lines.append(f"**Display:** {'ON' if show else 'OFF'}  ")
             lines.append(f"**Context:** {'included' if context else 'excluded'}  ")
             lines.append("")
-            lines.append("| Argument | Effect |")
-            lines.append("|----------|--------|")
-            lines.append("| `on` / `show` | Display thinking blocks |")
-            lines.append("| `off` / `hide` | Hide thinking blocks |")
-            lines.append("| `context` | Include thinking in model context |")
-            lines.append("| `nocontext` | Exclude thinking from model context |")
+
+            headers = ["Argument", "Effect"]
+            rows = [
+                ["`on` / `show`", "Display thinking blocks"],
+                ["`off` / `hide`", "Hide thinking blocks"],
+                ["`context`", "Include thinking in model context"],
+                ["`nocontext`", "Exclude thinking from model context"],
+            ]
+
+            table = format_table(headers, rows, wrap_columns={1})
+            lines.append(table)
             lines.append("")
 
             return {"display": "\n".join(lines), "context": None}

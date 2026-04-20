@@ -4,6 +4,7 @@ Command: /tools
 Description: Lists all available tools with their descriptions and safety flags.
 Parameters: none
 """
+from modules.utils import format_table
 
 
 def register(chat):
@@ -31,11 +32,8 @@ def register(chat):
 
         guardrails = globals_module.GLOBALS.get("guardrails_mode", "confirm-destructive")
 
-        lines = ["## Available Tools", ""]
-        lines.append(f"**Guardrails:** `{guardrails}`")
-        lines.append("")
-        lines.append("| Tool | Flags | Description |")
-        lines.append("|------|-------|-------------|")
+        headers = ["Tool", "Flags", "Description"]
+        rows = []
 
         for tool in tools_list:
             name = tool.get("name", "unknown")
@@ -50,11 +48,11 @@ def register(chat):
                 flags.append("`destructive`")
             flag_str = " ".join(flags) if flags else ""
 
-            lines.append(f"| `{name}` | {flag_str} | {desc} |")
+            rows.append([f"`{name}`", flag_str, desc])
 
-        lines.append("")
-        lines.append("Run manually: `/run <tool_name> [json_args]` or `$<tool_name>`")
-        lines.append("")
+        table = format_table(headers, rows, wrap_columns={2})
+
+        lines = ["## Available Tools", "", f"**Guardrails:** `{guardrails}`", "", table, "", "Run manually: `/run <tool_name> [json_args]` or `$<tool_name>`", ""]
 
         return {"display": "\n".join(lines), "context": None}
 

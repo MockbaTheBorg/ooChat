@@ -7,6 +7,7 @@ Parameters: none
 """
 
 from modules import globals as globals_module
+from modules.utils import format_table
 
 
 def register(chat):
@@ -41,24 +42,27 @@ def register(chat):
         thinking_str = f"display={'on' if show_thinking else 'off'}, context={'on' if add_thinking else 'off'}"
 
         lines = ["## Session Status", ""]
-        lines.append("| Setting | Value |")
-        lines.append("|---------|-------|")
-        lines.append(f"| **Model** | `{model}` |")
-        lines.append(f"| **API** | `{host}:{port}` ({api_mode} mode) |")
-        lines.append(f"| **Render mode** | `{render_mode}` |")
-        lines.append(f"| **Guardrails** | `{guardrails}` |")
-        lines.append(f"| **Tools** | {tools_str} |")
-        lines.append(f"| **Thinking** | {thinking_str} |")
-        lines.append(f"| **Context** | {msg_count} messages ({turn_count} turns) |")
-        lines.append(f"| **Attachments** | {attach_count} |")
+        headers = ["Setting", "Value"]
+        rows = [
+            ["Model", f"`{model}`"],
+            ["API", f"`{host}:{port}` ({api_mode} mode)"],
+            ["Render mode", f"`{render_mode}`"],
+            ["Guardrails", f"`{guardrails}`"],
+            ["Tools", tools_str],
+            ["Thinking", thinking_str],
+            ["Context", f"{msg_count} messages ({turn_count} turns)"],
+            ["Attachments", str(attach_count)],
+        ]
 
         if hasattr(chat, 'session') and chat.session:
-            lines.append(f"| **Session ID** | `{chat.session.session_id}` |")
-            lines.append(f"| **Session dir** | `{chat.session.session_dir}` |")
+            rows.append(["Session ID", f"`{chat.session.session_id}`"])
+            rows.append(["Session dir", f"`{chat.session.session_dir}`"])
         else:
-            lines.append("| **Session** | not initialized |")
+            rows.append(["Session", "not initialized"]) 
 
-        lines.append("")
+        table = format_table(headers, rows, wrap_columns={1})
+
+        lines = ["## Session Status", "", table, ""]
         return {"display": "\n".join(lines), "context": None}
 
     chat.add_command(

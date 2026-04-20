@@ -10,6 +10,7 @@ Use #n to select model by number (e.g., /model #1).
 import re
 from modules import globals as globals_module
 from modules.api import APIClient
+from modules.utils import format_table
 
 
 def register(chat):
@@ -71,23 +72,18 @@ def register(chat):
             }
 
         # Show markdown table
-        lines = ["\n### Available Models\n"]
-        lines.append("| # | Model | Size | Modified |")
-        lines.append("|---|-------|------|----------|")
-
+        headers = ["#", "Model", "Size", "Modified"]
+        rows = []
         for i, model in enumerate(cached_models, 1):
             name = model.get("name") or model.get("id", "unknown")
-            size = model.get("size", "")
-            if not size:
-                size = "-"
-            modified = model.get("modified_at", "")
-            if not modified:
-                modified = "-"
-            lines.append(f"| {i} | {name} | {size} | {modified} |")
+            size = model.get("size", "") or "-"
+            modified = model.get("modified_at", "") or "-"
+            rows.append([str(i), name, size, modified])
+
+        table = format_table(headers, rows, wrap_columns={1})
 
         current = globals_module.GLOBALS.get('model', 'unknown')
-        lines.append(f"\n**Current model:** {current}")
-        lines.append("\nTo switch: `/model <name>` or `/model #n` (e.g., `/model #1`)\n")
+        lines = ["\n### Available Models\n", table, f"\n**Current model:** {current}", "\nTo switch: `/model <name>` or `/model #n` (e.g., `/model #1`)\n"]
 
         return {"display": "\n".join(lines), "context": None}
 

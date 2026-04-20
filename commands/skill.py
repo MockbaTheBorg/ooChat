@@ -17,6 +17,7 @@ from modules.api import APIError, send_chat
 from modules.context import Context
 from modules.skills import interpolate_template
 from modules.thinking import process_assistant_response
+from modules.utils import format_table
 
 
 def register(chat):
@@ -33,14 +34,15 @@ def register(chat):
                     "display": "No skills loaded. Place .json skill files in the skills/ directory.\n",
                     "context": None,
                 }
-            lines = ["## Loaded Skills", ""]
-            lines.append("| Name | Context | Description |")
-            lines.append("|------|---------|-------------|")
+
+            headers = ["Name", "Context", "Description"]
+            rows = []
             for s in skills:
-                lines.append(f"| `{s.name}` | `{s.context_mode}` | {s.description[:50]} |")
-            lines.append("")
-            lines.append("Usage: `/skill <name> <prompt>`   or   `%<name> <prompt>`")
-            lines.append("")
+                rows.append([f"`{s.name}`", f"`{s.context_mode}`", s.description or ""])
+
+            table = format_table(headers, rows, wrap_columns={2})
+
+            lines = ["## Loaded Skills", "", table, "", "Usage: `/skill <name> <prompt>`   or   `%<name> <prompt>`", ""]
             return {"display": "\n".join(lines), "context": None}
 
         parts = args.split(None, 1)
@@ -58,24 +60,27 @@ def register(chat):
         # ── Name only (no prompt): show skill info ────────────────────────────
         if not input_text and not args.endswith(" "):
             # Distinguish "%name" (info) vs "%name " (invoke with empty)
-            lines = [
-                f"## Skill: {skill.name}", "",
-                f"| Field | Value |",
-                f"|-------|-------|" ,
-                f"| **Description** | {skill.description} |",
-                f"| **Version** | `{skill.version}` |",
-                f"| **Author** | {skill.author or '—'} |",
-                f"| **Context mode** | `{skill.context_mode}` |",
-                f"| **In context** | `{skill.include_in_context}` |",
-                f"| **Require input** | `{skill.require_input}` |",
+            headers = ["Field", "Value"]
+            rows = [
+                ["Description", skill.description or ""],
+                ["Version", f"`{skill.version}`"],
+                ["Author", skill.author or '—'],
+                ["Context mode", f"`{skill.context_mode}`"],
+                ["In context", f"`{skill.include_in_context}`"],
+                ["Require input", f"`{skill.require_input}`"],
             ]
+
             if skill.system_prompt:
-                preview = skill.system_prompt[:80] + ('…' if len(skill.system_prompt) > 80 else '')
-                lines.append(f"| **System** | {preview} |")
-            tmpl_preview = skill.prompt_template[:80] + ('…' if len(skill.prompt_template) > 80 else '')
-            lines.append(f"| **Template** | {tmpl_preview} |")
+                rows.append(["System", skill.system_prompt])
+
+            rows.append(["Template", skill.prompt_template or ""]) 
+
+            table = format_table(headers, rows, wrap_columns={1})
+
+            lines = [f"## Skill: {skill.name}", "", table]
             if skill.require_input:
-                lines.append(f"\n**Hint:** {skill.input_hint}")
+                lines.append("")
+                lines.append(f"**Hint:** {skill.input_hint}")
             lines.append("")
             return {"display": "\n".join(lines), "context": None}
 

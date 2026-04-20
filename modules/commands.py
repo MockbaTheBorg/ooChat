@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .utils import get_oochat_home, get_global_config_dir, get_local_config_dir, ensure_dir
+from .utils import get_oochat_home, get_global_config_dir, get_local_config_dir, ensure_dir, format_table
 
 
 # Type for command handlers
@@ -285,20 +285,17 @@ def _help_handler(chat: Any, args: str) -> Dict[str, Any]:
     # /? or /help — full command table
     commands = chat.registry.list_commands()
 
-    lines = ["## ooChat Commands", ""]
-    lines.append("| Command | Shortcut | Description |")
-    lines.append("|---------|----------|-------------|")
-
+    headers = ["Command", "Shortcut", "Description"]
+    rows = []
     for cmd in sorted(commands, key=lambda x: x["name"]):
         shortcut = cmd.get("shortcut") or ""
         shortcut_cell = f"`{shortcut}`" if shortcut else ""
         desc = cmd.get("description", "")
-        lines.append(f"| `{cmd['name']}` | {shortcut_cell} | {desc} |")
+        rows.append([f"`{cmd['name']}`", shortcut_cell, desc])
 
-    lines.append("")
-    lines.append("**Shortcuts:** `!<cmd>` for shell, `$<tool>` for tool run.")
-    lines.append("Tip: `/help <command>` for detailed help on any command.")
-    lines.append("")
+    table = format_table(headers, rows, wrap_columns={2})
+
+    lines = ["## ooChat Commands", "", table, "", "**Shortcuts:** `!<cmd>` for shell, `$<tool>` for tool run.", "Tip: `/help <command>` for detailed help on any command.", ""]
 
     return {"display": "\n".join(lines), "context": None}
 
