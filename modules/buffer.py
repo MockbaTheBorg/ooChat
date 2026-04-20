@@ -6,9 +6,9 @@ and the buffer is cleared after the message is sent.
 """
 
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List
 
-from .utils import is_text_file, read_text_file
+from .utils import is_text_file, read_text_file, truncate_text
 
 
 class AttachmentBuffer:
@@ -17,6 +17,7 @@ class AttachmentBuffer:
     def __init__(self):
         """Initialize empty buffer."""
         self._attachments: List[str] = []
+        self._attachment_items: List[Dict[str, object]] = []
         self._files: List[Path] = []
 
     def add_text(self, text: str) -> None:
@@ -26,6 +27,16 @@ class AttachmentBuffer:
             text: Text content to add.
         """
         self._attachments.append(text)
+        text_index = sum(1 for item in self._attachment_items if item["type"] == "text") + 1
+        preview_source = " ".join(text.strip().splitlines()) or "(blank text)"
+        self._attachment_items.append(
+            {
+                "type": "text",
+                "name": f"Text {text_index}",
+                "summary": truncate_text(preview_source, 48),
+                "chars": len(text),
+            }
+        )
 
     def add_file(self, filepath: Path) -> None:
         """Add a file's contents to the buffer.
@@ -51,6 +62,14 @@ class AttachmentBuffer:
         # Read and add content
         content = read_text_file(filepath)
         self._attachments.append(f"--- {filepath.name} ---\n{content}\n--- end of {filepath.name} ---")
+        self._attachment_items.append(
+            {
+                "type": "file",
+                "name": filepath.name,
+                "summary": str(filepath),
+                "chars": len(content),
+            }
+        )
         self._files.append(filepath)
 
     def get_content(self) -> str:
@@ -80,6 +99,7 @@ class AttachmentBuffer:
     def clear(self) -> None:
         """Clear all attachments."""
         self._attachments = []
+        self._attachment_items = []
         self._files = []
 
     def get_files(self) -> List[Path]:
@@ -89,6 +109,14 @@ class AttachmentBuffer:
             List of file paths.
         """
         return list(self._files)
+
+    def get_attachment_items(self) -> List[Dict[str, object]]:
+        """Get attachment metadata for display.
+
+        Returns:
+            List of attachment metadata dictionaries.
+        """
+        return [dict(item) for item in self._attachment_items]
 
     def prepend_to_message(self, message: str) -> str:
         """Prepend buffer content to a message.

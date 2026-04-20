@@ -119,6 +119,12 @@ def register(chat):
 
         # ── Call the model (streaming) ────────────────────────────────────────
         model = chat.GLOBALS.get("model")
+        if not model:
+            return {
+                "display": "No model selected. Use /model to select a model before sending prompts.\n",
+                "context": None,
+            }
+
         response_text = ""
         try:
             # Respect per-skill display_format by temporarily overriding

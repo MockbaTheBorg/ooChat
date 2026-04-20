@@ -1,9 +1,11 @@
 """Buffer command for ooChat.
 
 Command: /buffer
-Description: Show contents of the attachment buffer (files and text).
+Description: Show a summary of what is queued in the attachment buffer.
 Parameters: none
 """
+
+from modules.utils import format_table
 
 
 def register(chat):
@@ -12,37 +14,40 @@ def register(chat):
     def buffer_handler(chat, args):
         """Handle /buffer command.
 
-        Returns a display string with attached file names and combined
-        buffer content, or a notice if the buffer is empty.
+        Returns a display string with a compact table of attachments,
+        or a notice if the buffer is empty.
         """
         if not chat.buffer.has_attachments():
             return {"display": "Attachment buffer is empty.\n", "context": None}
 
+        items = chat.buffer.get_attachment_items()
+        headers = ["#", "Type", "Name", "Details", "Size"]
+        rows = []
+
+        for index, item in enumerate(items, 1):
+            rows.append(
+                [
+                    str(index),
+                    str(item["type"]).title(),
+                    str(item["name"]),
+                    str(item["summary"]),
+                    f"{item['chars']} char(s)",
+                ]
+            )
+
+        table = format_table(headers, rows, wrap_columns={3}, max_widths={3: 48})
         count = chat.buffer.count()
-        files = chat.buffer.get_files()
-        content = chat.buffer.get_content()
+        lines = ["## Attachment Buffer", "", f"{count} item(s) queued for the next message.", "", table, ""]
 
-        lines = []
-        lines.append(f"Attachment buffer ({count} item(s)):")
-
-        if files:
-            lines.append("\nFiles:")
-            for f in files:
-                # show file name only for brevity
-                lines.append(f"- {f.name}")
-
-        lines.append("\n--- Buffer Content ---\n")
-        lines.append(content)
-
-        return {"display": "\n".join(lines) + "\n", "context": None}
+        return {"display": "\n".join(lines), "context": None}
 
     chat.add_command(
         name="/buffer",
         handler=buffer_handler,
-        description="Show attachment buffer contents and files",
+        description="Show a table of items in the attachment buffer",
         long_help=(
-            "Displays the names of all files currently in the attachment buffer "
-            "and their combined text content.\n\n"
+            "Displays a compact table of everything currently queued in the "
+            "attachment buffer.\n\n"
             "The attachment buffer is prepended to your next message when you "
             "send it, then automatically cleared.\n\n"
             "**Related commands:** `/attach`, `/clear`"
