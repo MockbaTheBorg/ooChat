@@ -1,13 +1,31 @@
 """Run command for ooChat.
 
 Command: /run
-Description: Manually executes a tool and adds the result to model context by default.
+Description: Manually executes a tool and adds context based on the tool's result_handling mode.
 Parameters: [--silent] <tool_name> [tool_arguments_json]
 Shortcut: "$" (so the user can type $tool_name {"key":"value"})
 With --silent: output is shown but NOT added to context and NOT wrapped in ---.
 """
 
 import json
+
+from modules.tools import build_manual_tool_context_message
+
+
+def _format_tool_display(tool_name, tool_args, result):
+    """Render manual tool output in a code fence so whitespace survives markdown."""
+    output = result.get("output", "")
+    metadata = [
+        f"Tool: {tool_name}",
+        f"Arguments: {json.dumps(tool_args)}",
+    ]
+    if result.get("error"):
+        metadata.append(f"Error: {result['error']}")
+
+    parts = ["\n".join(metadata)]
+    if output:
+        parts.append(f"```text\n{output.rstrip()}\n```")
+    return "\n\n".join(parts) + "\n"
 
 
 def register(chat):
@@ -66,19 +84,13 @@ def register(chat):
         try:
             result = chat.execute_tool(tool_name, tool_args)
 
-            body = f"Tool: {tool_name}\n"
-            body += f"Arguments: {json.dumps(tool_args)}\n"
-            body += f"Result:\n{result['output']}\n"
-
-            if result.get("error"):
-                body += f"\nError: {result['error']}\n"
+            body = _format_tool_display(tool_name, tool_args, result)
 
             # Respect configured maximum characters for tool/context output
             max_chars = int(chat.GLOBALS.get("max_tool_output_chars", 16384))
 
             # Tool display/context flags
             display_directly = tool.get("display_directly", False)
-            include_in_context = tool.get("include_in_context", True)
 
             if silent:
                 display = body
@@ -90,12 +102,9 @@ def register(chat):
                 else:
                     display = f"---\n{body}---\n"
 
-                # Only include in context when tool permits it
-                if include_in_context:
-                    result_output = str(result.get('output', ''))
-                    context = f"Tool {tool_name} executed. Result: {result_output[:max_chars]}"
-                else:
-                    context = None
+                context = build_manual_tool_context_message(tool_name, tool, result)
+                if context is not None:
+                    context = context[:max_chars]
 
             return {
                 "display": display,
@@ -124,8 +133,8 @@ def register(chat):
             "- `--silent` — show output without adding it to context or "
             "wrapping it in `---`\n\n"
             "**Default behavior (no `--silent`):** output is wrapped in `---` "
-            "delimiters and added to the AI context so the model can see the "
-            "result.\n\n"
+            "delimiters unless the tool opts into direct display, and any "
+            "saved context follows the tool's `result_handling` mode.\n\n"
             "Note: When added to the AI context the output is truncated to "
             "the `max_tool_output_chars` value configured in `modules.globals` "
             "(default 16384).\n\n"

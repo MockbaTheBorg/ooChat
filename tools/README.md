@@ -68,7 +68,7 @@ A tool file can contain:
 | `read_only` | no | Marks the tool as read-only. Default `false`. |
 | `destructive` | no | Marks the tool as state-changing or risky. Default `false`. |
 | `display_directly` | no | When true, show tool output directly (not wrapped); respected by execution path. |
-| `include_in_context` | no | Whether to add the tool output to conversation context (persisted); respected by execution path. |
+| `result_handling` | no | Where the result goes: `model` sends raw output only to the immediate follow-up model call, `local` sends only status to the follow-up call but persists raw output in session context, and `display_only` sends only status to the follow-up call and persists no raw output. Default `model`. |
 | `parameters` | no | JSON Schema for function arguments. |
 | `command` | conditional | Shell command template with `{arg}` substitution. |
 | `argv` | conditional | Argument vector form, run without shell interpolation. |
@@ -167,7 +167,9 @@ Current execution path:
 5. Run the subprocess.
 6. Capture stdout.
 7. Append stderr if the exit code is non-zero.
-8. Truncate final output to `max_tool_output_chars`.
+8. Build the model follow-up tool message from `result_handling`.
+9. Build the persisted session tool message from `result_handling`.
+10. Truncate final output to `max_tool_output_chars` (default `16384`).
 
 Returned result includes:
 
@@ -256,6 +258,9 @@ Modes:
 - Prefer `argv` when argument boundaries matter.
 - Mark tools `read_only: true` whenever they truly do not modify state.
 - Mark tools `destructive: true` for file writes, shell execution, deletes, or anything risky.
+- Use `result_handling: "model"` for tools whose raw output should drive the model's current reasoning.
+- Use `result_handling: "local"` for locally useful artifacts that future prompts may need to reference.
+- Use `result_handling: "display_only"` for user-facing output that should not pollute session context.
 - Keep descriptions concrete so the model chooses the right tool.
 - Keep schemas narrow; fewer parameters generally produce better tool calls.
 
@@ -264,5 +269,5 @@ Modes:
 - Forgetting `name`.
 - Defining neither `command` nor `argv`.
 - Marking a write-capable tool as read-only.
--- Forgetting to set `display_directly` or `include_in_context` appropriately; tool execution now respects these flags and manual `/run` will not bypass guardrails.
+- Forgetting to set `display_directly` or `result_handling` appropriately; `display_directly` only affects immediate rendering, while `result_handling` controls what the current model call sees and what future prompts remember.
 - Using unsafe shell templating in `command` when `argv` would be safer.

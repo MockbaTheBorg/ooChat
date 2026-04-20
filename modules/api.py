@@ -74,7 +74,7 @@ class APIClient:
         if tools:
             payload["tools"] = tools
 
-        if max_tokens:
+        if max_tokens is not None:
             payload["options"] = {"num_predict": max_tokens}
 
         return payload
@@ -103,7 +103,7 @@ class APIClient:
         if tools:
             payload["tools"] = tools
 
-        if max_tokens:
+        if max_tokens is not None:
             payload["max_tokens"] = max_tokens
 
         return payload
@@ -146,16 +146,86 @@ class APIClient:
             raise APIError(f"API request failed: {e}")
 
         if stream:
+            pending_tool_calls: Dict[int, Dict[str, Any]] = {}
             for line in response.iter_lines():
                 if line:
                     try:
-                        chunk = json.loads(line.decode('utf-8'))
-                        yield self._normalize_chunk(chunk)
+                        payload_line = self._decode_stream_line(line)
+                        if payload_line is None:
+                            continue
+                        chunk = json.loads(payload_line)
+                        normalized = self._normalize_chunk(chunk)
+                        if self.openai_mode:
+                            normalized = self._finalize_openai_tool_calls(normalized, pending_tool_calls)
+                        if not normalized.get("content") and not normalized.get("tool_calls") and not normalized.get("done"):
+                            continue
+                        yield normalized
                     except json.JSONDecodeError as e:
                         # Skip malformed lines
                         continue
         else:
             yield self._normalize_chunk(response.json())
+
+    def _decode_stream_line(self, line: bytes) -> Optional[str]:
+        """Decode a streamed line, handling OpenAI-style SSE frames."""
+        text = line.decode('utf-8').strip()
+        if not text:
+            return None
+
+        if text.startswith("data:"):
+            text = text[5:].strip()
+
+        if text == "[DONE]":
+            return None
+
+        return text
+
+    def _finalize_openai_tool_calls(self, normalized: Dict[str, Any],
+                                    pending_tool_calls: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
+        """Assemble streamed OpenAI tool call deltas into complete calls.
+
+        OpenAI-compatible streaming delivers tool calls incrementally by index,
+        often splitting `id`, `function.name`, and `function.arguments` across
+        many chunks. ooChat expects complete calls, so emit them only once the
+        server signals the tool-calling turn is done.
+        """
+        tool_calls = normalized.get("tool_calls")
+        if tool_calls:
+            for tool_call in tool_calls:
+                index = tool_call.get("index", 0)
+                entry = pending_tool_calls.setdefault(index, {
+                    "id": "",
+                    "type": tool_call.get("type", "function"),
+                    "function": {
+                        "name": "",
+                        "arguments": "",
+                    },
+                })
+
+                if tool_call.get("id"):
+                    entry["id"] += tool_call["id"]
+                if tool_call.get("type"):
+                    entry["type"] = tool_call["type"]
+
+                function = tool_call.get("function", {})
+                if function.get("name"):
+                    entry["function"]["name"] += function["name"]
+                if function.get("arguments"):
+                    entry["function"]["arguments"] += function["arguments"]
+
+            normalized["tool_calls"] = None
+
+        if normalized.get("done") and pending_tool_calls:
+            finish_reason = normalized.get("finish_reason")
+            if finish_reason in ("tool_calls", "stop", None):
+                assembled = [
+                    pending_tool_calls[index]
+                    for index in sorted(pending_tool_calls.keys())
+                ]
+                normalized["tool_calls"] = assembled
+                pending_tool_calls.clear()
+
+        return normalized
 
     def _normalize_chunk(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize a response chunk to a common format.
@@ -218,25 +288,20 @@ class APIClient:
         if "choices" in chunk and len(chunk["choices"]) > 0:
             choice = chunk["choices"][0]
             delta = choice.get("delta", {})
+            message = choice.get("message", {})
 
-            result["content"] = delta.get("content", "")
+            result["content"] = delta.get("content", message.get("content", ""))
 
             # Check for tool calls in delta
             if "tool_calls" in delta:
                 result["tool_calls"] = delta["tool_calls"]
+            elif "tool_calls" in message:
+                result["tool_calls"] = message["tool_calls"]
 
             # Check finish reason
             if choice.get("finish_reason"):
                 result["done"] = True
-
-        # Handle non-streaming response
-        elif "choices" in chunk:
-            choice = chunk["choices"][0]
-            message = choice.get("message", {})
-            result["content"] = message.get("content", "")
-            result["done"] = True
-            if "tool_calls" in message:
-                result["tool_calls"] = message["tool_calls"]
+                result["finish_reason"] = choice.get("finish_reason")
 
         return result
 

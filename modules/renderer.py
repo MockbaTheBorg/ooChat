@@ -552,4 +552,13 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 except Exception:
                     pass
         elif role == "tool":
-            print(f"[Tool result]: {content[:200]}{'...' if len(content) > 200 else ''}\n")
+            max_chars = int(globals_module.GLOBALS.get("max_tool_output_chars", 16384))
+            render_content = content
+            if len(render_content) > max_chars:
+                render_content = render_content[:max_chars] + "... (truncated)"
+
+            if renderer.mode in ("markdown", "hybrid"):
+                render_markdown(f"[Tool result]:\n```text\n{render_content.rstrip()}\n```")
+                print()
+            else:
+                print(f"[Tool result]:\n{render_content}\n")

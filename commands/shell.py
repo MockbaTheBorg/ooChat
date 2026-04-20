@@ -50,15 +50,16 @@ def register(chat):
 
             output = result.stdout or result.stderr or "(no output)"
 
-            body = f"$ {args}\n{output}\n"
+            body = f"$ {args}\n"
             if result.returncode != 0:
                 body = f"Exit code: {result.returncode}\n" + body
+            body += f"```text\n{output.rstrip()}\n```\n"
 
             # Respect configured maximum characters for tool/context output
             max_chars = int(chat.GLOBALS.get("max_tool_output_chars", 16384))
 
             if silent:
-                display = f"```\n{body}```\n"
+                display = body
                 context = None
             else:
                 display = f"---\n{body}---\n"

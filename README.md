@@ -130,7 +130,7 @@ Only keys present in `modules/globals.py` defaults are loaded from config files.
 | `add_thinking_to_context` | `true` | Whether `<think>` blocks remain in stored assistant messages. |
 | `max_tool_output_chars` | `16384` | Max command/tool output injected into model context. |
 | `tool_timeout` | `120` | Timeout for `/shell`, `/run`, and tool execution. |
-| `default_max_tokens` | `32768` | Request token cap sent to the API. |
+| `default_max_tokens` | `null` | Optional request token cap sent to the API. When unset, ooChat does not impose a model response limit. |
 | `system_prompt` | `null` | Default system prompt for new or prompt-less sessions. |
 
 Example:
@@ -148,7 +148,7 @@ Example:
   "add_thinking_to_context": true,
   "max_tool_output_chars": 16384,
   "tool_timeout": 120,
-  "default_max_tokens": 32768,
+  "default_max_tokens": null,
   "system_prompt": null
 }
 ```
@@ -212,7 +212,7 @@ For a normal prompt, `oochat.py` currently does this:
 3. Appends the user message to context.
 4. Streams the model response.
 5. Strips or preserves `<think>` blocks based on settings.
-6. If the model emitted tool calls, runs them and asks the model again with tool results.
+6. If the model emitted tool calls, ooChat stores that assistant tool-call turn, runs the tools, and asks the model again with the tool results.
 7. Stores the final assistant message in session context.
 8. Saves the session.
 
@@ -340,7 +340,7 @@ Each tool can define:
 - `read_only`
 - `destructive`
 - `display_directly`
-- `include_in_context`
+- `result_handling`
 - `parameters` as JSON Schema
 - either `command` or `argv`
 - optional `cwd`
@@ -561,7 +561,7 @@ Place a `.json` file in one of the skill search paths:
 
 - Skills are JSON files, not Python filter plugins.
 - Manual `/run` now respects `guardrails_mode` (it prompts before destructive tools).
-- Tool fields `display_directly` and `include_in_context` are parsed and honored by the tool execution path: `display_directly` controls immediate display, and `include_in_context` controls whether results are added to the conversation context.
+- Tool fields `display_directly` and `result_handling` are parsed and honored by the tool execution path: `display_directly` controls immediate display, while `result_handling` controls what the current follow-up model call sees and what future prompts retain in session context.
 - Skills' `output.display_format` is used to select the renderer mode during skill invocation; the original renderer mode is restored afterward.
 - System messages are stored and exportable; explicit `/redraw` will show system messages (automatic redraws may still hide them).
 - Both `FilterRegistry` and `CommandRegistry` filter hooks are applied in the normal chat flow (global filters run before command-registry filters).

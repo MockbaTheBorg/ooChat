@@ -40,7 +40,17 @@ from modules.renderer import Renderer, redraw_conversation
 from modules.session import Session, resolve_session, list_sessions, SessionError
 from modules.skills import SkillRegistry, load_all_skills
 from modules.thinking import process_assistant_response
-from modules.tools import ToolRegistry, load_all_tools, execute_tool, needs_confirmation
+from modules.tools import (
+    canonicalize_tool_call,
+    ToolRegistry,
+    build_tool_status_message,
+    build_tool_followup_message,
+    build_tool_session_message,
+    execute_tool,
+    load_all_tools,
+    needs_confirmation,
+    resolve_tool_result_handling,
+)
 
 
 class ChatApp:
@@ -356,7 +366,12 @@ class ChatApp:
             # assistant message that triggered tools is not persisted)
             if tool_calls:
                 self.renderer.end_response(display_text)
-                self._handle_tool_calls(tool_calls)
+                self._handle_tool_calls(
+                    tool_calls,
+                    assistant_content=context_text,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                )
                 return
 
             # No tool calls: persist the response then render with a full
@@ -443,8 +458,12 @@ class ChatApp:
                 self.renderer.render_assistant_message(display_text)
 
             if tool_calls:
-                # For now, fallback to existing tool handling which uses stdout
-                self._handle_tool_calls(tool_calls)
+                self._handle_tool_calls(
+                    tool_calls,
+                    assistant_content=context_text,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                )
                 return
 
             self.context.add_assistant(context_text)
@@ -459,101 +478,226 @@ class ChatApp:
                 print(f"\nAPI error: {e}")
             self.context.messages.pop()
 
-    def _handle_tool_calls(self, tool_calls: List[Dict]) -> None:
+    def _handle_tool_calls(self, tool_calls: List[Dict],
+                           assistant_content: str = "",
+                           tools: List[Dict] = None,
+                           max_tokens: int = None) -> None:
         """Handle tool calls from the model.
 
         Args:
             tool_calls: List of tool call objects.
+            assistant_content: Assistant content associated with the tool calls.
+            tools: Tool schemas to keep sending on follow-up requests.
+            max_tokens: Optional max_tokens override for follow-up requests.
         """
-        for call in tool_calls:
-            tool_name = call.get("function", {}).get("name")
-            tool_args_str = call.get("function", {}).get("arguments", "{}")
-            call_id = call.get("id", "unknown")
-
-            try:
-                tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
-            except json.JSONDecodeError:
-                tool_args = {}
-
-            # Check if tool exists
-            tool = self.tools.get(tool_name)
-            if not tool:
-                print(f"\nUnknown tool: {tool_name}")
-                self.context.add_tool_result(call_id, f"Error: Unknown tool {tool_name}")
-                continue
-
-            # Check guardrails
-            allowed, reason = self.tools.is_allowed(tool_name)
-            if not allowed:
-                print(f"\nTool blocked by guardrails: {reason}")
-                self.context.add_tool_result(call_id, f"Error: {reason}")
-                continue
-
-            # Confirm if needed
-            if reason == "NEEDS_CONFIRMATION":
-                confirm = input(f"\nTool '{tool_name}' may modify state. Proceed? [y/N]: ").strip().lower()
-                if confirm != 'y':
-                    print("Tool execution cancelled.")
-                    self.context.add_tool_result(call_id, "Error: User cancelled")
-                    continue
-
-            # Execute tool
-            print(f"\nExecuting: {tool_name}({tool_args})")
-            result = execute_tool(tool, tool_args)
-
-            if result.get("error"):
-                print(f"Error: {result['error']}")
-
-            # Respect tool display and context hints
-            display_directly = tool.get("display_directly", False)
-            include_in_context = tool.get("include_in_context", True)
-
-            result_output = result.get("output", "")
-
-            if display_directly:
-                try:
-                    if self.renderer.mode in ("markdown", "hybrid"):
-                        self.renderer.render_assistant_message(result_output)
-                    else:
-                        print(f"\n{result_output}\n")
-                except Exception:
-                    print(f"\n{result_output}\n")
-
-            if include_in_context:
-                self.context.add_tool_result(call_id, result_output)
-
-        # After tool calls, get final response from model
         model = self.GLOBALS.get('model')
         if not model:
             print("\nNo model selected. Cannot request final response; use /model to select one.")
             return
-        response_text = ""
+
+        base_messages = self.context.get_messages()
+        turn_followup_messages = []
+        turn_session_messages = []
+        pending_tool_calls = tool_calls
+        pending_assistant_content = assistant_content
+
+        while pending_tool_calls:
+            pending_tool_calls = [
+                canonicalize_tool_call(self.tools, call)
+                for call in pending_tool_calls
+            ]
+            batch_requires_followup = False
+            for call in pending_tool_calls:
+                tool_name = call.get("function", {}).get("name")
+                tool = self.tools.get(tool_name)
+                if tool is None:
+                    batch_requires_followup = True
+                    break
+                if resolve_tool_result_handling(tool) == "model":
+                    batch_requires_followup = True
+                    break
+
+            assistant_tool_call_message = {
+                "role": "assistant",
+                "content": pending_assistant_content or "",
+                "tool_calls": pending_tool_calls,
+            }
+            turn_followup_messages.append(assistant_tool_call_message)
+            if batch_requires_followup:
+                turn_session_messages.append(assistant_tool_call_message)
+
+            local_statuses = []
+
+            for call in pending_tool_calls:
+                tool_name = call.get("function", {}).get("name")
+                tool_args_str = call.get("function", {}).get("arguments", "{}")
+                call_id = call.get("id", "unknown")
+
+                try:
+                    tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
+                except json.JSONDecodeError:
+                    tool_args = {}
+
+                tool = self.tools.get(tool_name)
+                if not tool:
+                    self._commit_turn_session_messages(turn_session_messages)
+                    self._report_tool_failure(
+                        tool_name,
+                        f"Unknown tool: {tool_name}",
+                    )
+                    return
+
+                allowed, reason = self.tools.is_allowed(tool_name)
+                if not allowed:
+                    self._commit_turn_session_messages(turn_session_messages)
+                    self._report_tool_failure(
+                        tool_name,
+                        f"Tool blocked by guardrails: {reason}",
+                    )
+                    return
+
+                if reason == "NEEDS_CONFIRMATION":
+                    confirm = input(f"\nTool '{tool_name}' may modify state. Proceed? [y/N]: ").strip().lower()
+                    if confirm != 'y':
+                        self._commit_turn_session_messages(turn_session_messages)
+                        self._report_tool_failure(tool_name, "Tool execution cancelled by user.")
+                        return
+
+                print(f"\nExecuting: {tool_name}({tool_args})")
+                result = execute_tool(tool, tool_args)
+
+                if result.get("error"):
+                    self._commit_turn_session_messages(turn_session_messages)
+                    self._report_tool_failure(
+                        tool_name,
+                        f"Tool execution failed with {result['error']}.",
+                        result.get("output", ""),
+                    )
+                    return
+
+                display_directly = tool.get("display_directly", False)
+                result_output = result.get("output", "")
+
+                if display_directly and result_output:
+                    try:
+                        if self.renderer.mode in ("markdown", "hybrid"):
+                            fenced_output = f"```text\n{result_output.rstrip()}\n```"
+                            self.renderer.render_assistant_message(fenced_output)
+                        else:
+                            print(f"\n{result_output}\n")
+                    except Exception:
+                        print(f"\n{result_output}\n")
+
+                if not batch_requires_followup:
+                    local_statuses.append(build_tool_status_message(tool_name, result))
+
+                followup_message = build_tool_followup_message(tool_name, tool, result)
+                if followup_message is not None:
+                    turn_followup_messages.append({
+                        "role": "tool",
+                        "content": followup_message,
+                        "tool_call_id": call_id,
+                    })
+
+                session_message = build_tool_session_message(tool_name, tool, result)
+                if session_message is not None:
+                    turn_session_messages.append({
+                        "role": "tool",
+                        "content": session_message,
+                        "tool_call_id": call_id,
+                    })
+
+            if not batch_requires_followup:
+                self._commit_turn_session_messages(turn_session_messages)
+                self._render_local_tool_statuses(local_statuses)
+                if self.session:
+                    self.session.save()
+                return
+
+            response_text = ""
+            next_tool_calls = []
+
+            try:
+                self.renderer.start_response()
+
+                for chunk in send_chat(
+                    model,
+                    base_messages + turn_followup_messages,
+                    stream=True,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                ):
+                    content = chunk.get("content", "")
+                    if content:
+                        self.renderer.stream_chunk(content)
+                        response_text += content
+
+                    if chunk.get("tool_calls"):
+                        next_tool_calls.extend(chunk["tool_calls"])
+
+                display_text, context_text, thinking_blocks = process_assistant_response(response_text, include_blocks=True)
+
+                if next_tool_calls:
+                    self.renderer.end_response(display_text)
+                    pending_tool_calls = next_tool_calls
+                    pending_assistant_content = context_text
+                    continue
+
+                turn_session_messages.append({
+                    "role": "assistant",
+                    "content": context_text,
+                })
+                self._commit_turn_session_messages(turn_session_messages)
+                self.renderer.end_response(display_text, self.context.get_messages())
+
+                post_text = self.registry.apply_post_filters(context_text)
+                _ = self.filters.apply_post_receive(post_text)
+
+                self.session.save()
+                return
+
+            except APIError as e:
+                print(f"\nAPI error: {e}")
+                return
+
+    def _commit_turn_session_messages(self, messages: List[Dict]) -> None:
+        """Persist deferred tool-turn messages into the session context."""
+        for message in messages:
+            role = message.get("role")
+            if role == "assistant":
+                self.context.add_assistant(message.get("content", ""), tool_calls=message.get("tool_calls"))
+            elif role == "tool":
+                self.context.add_tool_result(message.get("tool_call_id", "unknown"), message.get("content", ""))
+
+    def _render_local_tool_statuses(self, statuses: List[str]) -> None:
+        """Render locally-generated tool status messages without re-querying the model."""
+        if not statuses:
+            return
+
+        status_text = "\n".join(statuses)
+        try:
+            self.renderer.render_assistant_message(status_text)
+        except Exception:
+            print(f"\n{status_text}\n")
+
+    def _report_tool_failure(self, tool_name: str, message: str,
+                             details: str = "") -> None:
+        """Report a model-triggered tool failure and stop the tool roundtrip."""
+        print(f"\n{message}")
+
+        failure_text = f"Tool execution failed: `{tool_name}`.\n\n{message}"
+        if details:
+            failure_text += f"\n\n```text\n{details.rstrip()}\n```"
+
+        self.context.add_assistant(failure_text)
 
         try:
-            self.renderer.start_response()
+            self.renderer.render_assistant_message(failure_text)
+        except Exception:
+            print(f"\n{failure_text}\n")
 
-            for chunk in send_chat(model, self.context.get_messages(), stream=True):
-                content = chunk.get("content", "")
-                if content:
-                    self.renderer.stream_chunk(content)
-                    response_text += content
-
-            # Process thinking blocks first so thinking is shown before response
-            display_text, context_text, thinking_blocks = process_assistant_response(response_text, include_blocks=True)
-
-            # Persist the response, then render with full conversation so
-            # hybrid mode can replace the streamed plain-text with markdown.
-            self.context.add_assistant(context_text)
-            self.renderer.end_response(display_text, self.context.get_messages())
-
-            # Apply post-filters (command registry then global filters)
-            post_text = self.registry.apply_post_filters(context_text)
-            _ = self.filters.apply_post_receive(post_text)
-
+        if self.session:
             self.session.save()
-
-        except APIError as e:
-            print(f"\nAPI error: {e}")
 
     def execute_tool(self, tool_name: str, args: Dict) -> Dict:
         """Execute a tool manually.

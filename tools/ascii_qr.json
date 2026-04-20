@@ -1,0 +1,47 @@
+{
+  "name": "ascii_qr",
+  "description": "Generate a terminal-safe QR code rendered with monospaced block characters.",
+  "read_only": true,
+  "destructive": false,
+  "display_directly": true,
+  "result_handling": "local",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "The data to encode into the QR code."
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 40,
+        "default": 0,
+        "description": "QR version: 1‑40 or 0 for automatic selection."
+      },
+      "error_correction": {
+        "type": "string",
+        "enum": ["L","M","Q","H"],
+        "default": "M",
+        "description": "Error correction level."
+      },
+      "box_size": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 1,
+        "description": "Size of each QR module."
+      },
+      "margin": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 4,
+        "description": "Number of quiet‑zone modules around the QR code."
+      }
+    },
+    "required": ["text"],
+    "additionalProperties": false
+  },
+  "argv": ["python3", "{cwd}/ascii_qr.py", "{text}", "--version", "{version}", "--error", "{error_correction}", "--box", "{box_size}", "--margin", "{margin}"],
+  "cwd": ".",
+  "timeout": 30
+}
