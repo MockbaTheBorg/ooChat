@@ -16,7 +16,7 @@ def register(chat):
         messages, then clears the context and saves the session.
         """
         # If there are no non-system messages, just clear (no prompt)
-        non_system = [m for m in chat.context.messages if m.role != "system"]
+        non_system = [m for m in chat.context.get_flattened_messages() if m.get("role") != "system"]
         if non_system:
             confirm = input(
                 "Reset will clear the conversation context for this session. Proceed? [y/N]: "

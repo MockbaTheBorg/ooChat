@@ -3,8 +3,7 @@
   "description": "Write content to a text file",
   "read_only": false,
   "destructive": true,
-  "display_directly": false,
-  "result_handling": "model",
+  "kind": "remote",
   "parameters": {
     "type": "object",
     "properties": {

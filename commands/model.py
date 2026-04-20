@@ -37,6 +37,13 @@ def register(chat):
                 if 1 <= num <= len(cached_models):
                     model_name = cached_models[num - 1]["name"]
                     globals_module.GLOBALS["model"] = model_name
+                    # If an input session exists, reset it so the prompt style
+                    # is recreated with the new model-aware color.
+                    try:
+                        if getattr(chat, 'input_handler', None) and getattr(chat.input_handler, 'session', None):
+                            chat.input_handler.session = None
+                    except Exception:
+                        pass
                     return {
                         "display": f"Model changed to: {model_name}\n",
                         "context": None,
@@ -49,6 +56,11 @@ def register(chat):
 
             # Set model directly by name
             globals_module.GLOBALS["model"] = args
+            try:
+                if getattr(chat, 'input_handler', None) and getattr(chat.input_handler, 'session', None):
+                    chat.input_handler.session = None
+            except Exception:
+                pass
             return {
                 "display": f"Model changed to: {args}\n",
                 "context": None,

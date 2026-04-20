@@ -48,31 +48,17 @@ def register(chat):
                 "context": None,
             }
 
-        # Get messages to compact
-        messages = chat.context.messages
-
-        # Find messages to keep and messages to summarize
-        # System messages are always kept
-        system_msgs = [m for m in messages if m.role == "system"]
-
-        # Get non-system messages
-        other_msgs = [m for m in messages if m.role != "system"]
-
-        # Determine how many turns to compact
+        # Determine how many interactions (turns) to compact
         turns_to_compact = current_turns - keep_last
 
-        # Build text to summarize
-        compact_msgs = other_msgs[:turns_to_compact * 2]  # Each turn is user + assistant
-        keep_msgs = other_msgs[turns_to_compact * 2:]
+        # Interactions list (old -> new). System prompt is stored separately.
+        interactions = list(chat.context.interactions)
 
-        if not compact_msgs:
-            return {
-                "display": "Nothing to compact.\n",
-                "context": None,
-            }
+        if turns_to_compact <= 0:
+            return {"display": "Nothing to compact.\n", "context": None}
 
         # Ask for confirmation if compacting will modify the session
-        non_system_msgs = [m for m in messages if m.role != "system"]
+        non_system_msgs = [m for inter in interactions for m in inter.messages]
         if non_system_msgs:
             confirm = input(
                 "Compacting will summarize older conversation and modify session context. Proceed? [y/N]: "
@@ -80,13 +66,19 @@ def register(chat):
             if confirm != 'y':
                 return {"display": "Compaction cancelled.\n", "context": None}
 
-        # Create summary prompt
-        compact_text = "\n".join(f"{m.role}: {m.content}" for m in compact_msgs)
+        # Build text to summarize from the oldest interactions
+        compact_interactions = interactions[:turns_to_compact]
+        compact_text_parts = []
+        for inter in compact_interactions:
+            for m in inter.messages:
+                compact_text_parts.append(f"{m.role}: {m.content}")
+
+        compact_text = "\n".join(compact_text_parts)
         summary_prompt = f"""Summarize the following conversation in a concise way that preserves key information:
 
-{compact_text}
+    {compact_text}
 
-Provide a brief summary of the main topics discussed and any important conclusions or decisions made."""
+    Provide a brief summary of the main topics discussed and any important conclusions or decisions made."""
 
         # Call model for summary
         try:
@@ -101,41 +93,45 @@ Provide a brief summary of the main topics discussed and any important conclusio
                     "context": None,
                 }
 
-            # Create new context with summary
-            from modules.context import Context, Message
+            # Create new context with summary and kept interactions
+            from modules.context import Context
             new_context = Context()
 
-            # Add system messages
-            for msg in system_msgs:
-                new_context.messages.append(msg)
+            # Preserve original system prompt by inserting summary as system
+            if chat.context.system_prompt:
+                new_context.add_system(f"[Previous conversation summary]\n{summary}")
+            else:
+                new_context.add_system(f"[Previous conversation summary]\n{summary}")
 
-            # Add summary as a system message
-            new_context.add_system(
-                f"[Previous conversation summary]\n{summary}"
-            )
-
-            # Add kept messages
-            for msg in keep_msgs:
-                new_context.messages.append(msg)
+            # Recreate kept interactions in order
+            kept_interactions = interactions[turns_to_compact:]
+            for old_inter in kept_interactions:
+                for m in old_inter.messages:
+                    if m.role == 'user':
+                        new_context.add_user(m.content, local=(old_inter.kind == 'local'))
+                    elif m.role == 'assistant':
+                        new_context.add_assistant(m.content, tool_calls=m.tool_calls)
+                    elif m.role == 'tool':
+                        new_context.add_tool_result(m.tool_call_id or 'unknown', m.content)
 
             # Update context and save session
             old_count = chat.context.get_message_count()
             chat.context = new_context
-            # Ensure session references the new context and persist
             try:
                 if getattr(chat, 'session', None):
                     chat.session.context = chat.context
                     chat.session.save()
             except Exception:
-                # Best-effort save; ignore failures here to avoid crashing
                 pass
             new_count = chat.context.get_message_count()
 
             return {
-                "display": f"Context compacted.\n"
-                           f"  Messages: {old_count} → {new_count}\n"
-                           f"  Turns compacted: {turns_to_compact}\n"
-                           f"  Turns kept: {keep_last}\n",
+                "display": (
+                    f"Context compacted.\n"
+                    f"  Messages: {old_count} → {new_count}\n"
+                    f"  Turns compacted: {turns_to_compact}\n"
+                    f"  Turns kept: {keep_last}\n"
+                ),
                 "context": None,
             }
 

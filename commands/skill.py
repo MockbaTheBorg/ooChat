@@ -103,18 +103,18 @@ def register(chat):
             # Isolated context; optionally seeded with skill's system prompt
             temp_ctx = Context(system_prompt=system)
             temp_ctx.add_user(prompt)
-            messages = temp_ctx.get_messages()
+            messages = temp_ctx.get_remote_messages()
 
         elif skill.context_mode == "inject_system" and system:
             # Existing history but with skill's system prompt overriding
-            existing = chat.context.get_messages()
+            existing = chat.context.get_remote_messages()
             non_system = [m for m in existing if m["role"] != "system"]
             messages = [{"role": "system", "content": system}] + non_system
             messages.append({"role": "user", "content": prompt})
 
         else:
-            # inherit: use conversation history as-is, append user turn
-            messages = list(chat.context.get_messages())
+            # inherit: use conversation history as-is (remote only), append user turn
+            messages = list(chat.context.get_remote_messages())
             messages.append({"role": "user", "content": prompt})
 
         # ── Call the model (streaming) ────────────────────────────────────────

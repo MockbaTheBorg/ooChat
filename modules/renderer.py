@@ -9,6 +9,7 @@ Supports three render modes:
 import sys
 import threading
 import time
+import os
 from typing import Any, Dict, List, Optional, TextIO
 
 from . import globals as globals_module
@@ -132,6 +133,13 @@ class Renderer:
         # Spinner controls for markdown 'Thinking...' indicator
         self._spinner_thread: Optional[threading.Thread] = None
         self._spinner_stop: Optional[threading.Event] = None
+        # Track the role of the last-rendered message and whether a
+        # separator (HR) was printed after it. This persists state
+        # across redraws so callers (like the prompt renderer) can
+        # decide whether to emit a separator before printing a new
+        # interaction header.
+        self._last_printed_separator: bool = False
+        self._last_role: Optional[str] = None
 
     def set_mode(self, mode: str) -> None:
         """Set render mode.
@@ -224,7 +232,8 @@ class Renderer:
                 self._buffer.append(visible_text)
 
     def end_response(self, final_text: str = None,
-                       messages: List[Dict[str, Any]] = None) -> None:
+                           messages: List[Dict[str, Any]] = None,
+                           session_id: Optional[str] = None) -> None:
         """End response rendering.
 
         Args:
@@ -274,7 +283,7 @@ class Renderer:
                     if sys.stdout.isatty() and RICH_AVAILABLE:
                         get_console().clear()
                     self._thinking_blocks = []
-                    redraw_conversation(messages, self, show_header=False)
+                    redraw_conversation(messages, self, show_header=False, session_id=session_id)
                 else:
                     # Fallback: redraw only the current response
                     self._redraw_markdown(text)
@@ -407,29 +416,52 @@ class Renderer:
                 print("---")
                 # Extra blank line after finished response in stream mode
                 print()
+            try:
+                self._last_role = 'assistant'
+                self._last_printed_separator = True
+            except Exception:
+                pass
         elif self.mode in ("markdown", "hybrid"):
             print()  # Add newline
             render_markdown(content)
             if RICH_AVAILABLE:
-                console = get_console()
-                console.print("---")
+                render_markdown("---")
             else:
                 print("---")
+            try:
+                self._last_role = 'assistant'
+                self._last_printed_separator = True
+            except Exception:
+                pass
 
-    def render_user_message(self, content: str) -> None:
+    def render_user_message(self, content: str, leading_newline: bool = True) -> None:
         """Render a user message.
 
         Args:
             content: Message content.
         """
-        # User messages are shown with a green prompt
+        # User messages are shown with a green prompt. `leading_newline`
+        # controls whether to emit a blank line before the prompt; callers
+        # that print a header immediately before the prompt should pass
+        # `leading_newline=False` to avoid an extra empty line.
         if RICH_AVAILABLE:
             console = get_console()
-            # Use green for the prompt
-            console.print()
-            console.print(f"[green]>>>[/green] {content}")
+            if leading_newline:
+                console.print()
+            # Prompt is green only when a model is configured; otherwise red
+            color = "green" if globals_module.get_global("model") else "red"
+            console.print(f"[{color}]>>>[/{color}] {content}")
         else:
-            print(f"\n>>> {content}")
+            if leading_newline:
+                print(f"\n>>> {content}")
+            else:
+                print(f">>> {content}")
+
+        try:
+            self._last_role = 'user'
+            self._last_printed_separator = False
+        except Exception:
+            pass
 
     def render_system_message(self, content: str) -> None:
         """Render a system message.
@@ -442,12 +474,18 @@ class Renderer:
             console.print(f"[dim]{content}[/dim]")
         else:
             print(f"[{content}]")
+        try:
+            self._last_role = 'system'
+            self._last_printed_separator = False
+        except Exception:
+            pass
 
 
 def redraw_conversation(messages: List[Dict[str, Any]],
                         renderer: Renderer = None,
                         show_header: bool = True,
-                        show_system: bool = False) -> None:
+                        show_system: bool = False,
+                        session_id: Optional[str] = None) -> None:
     """Redraw entire conversation using current render mode.
 
     Args:
@@ -460,10 +498,21 @@ def redraw_conversation(messages: List[Dict[str, Any]],
         renderer = Renderer()
 
     # Clear screen (only when invoked standalone; callers that already cleared
-    # the screen, e.g. end_response in hybrid mode, can skip this)
-    if show_header and sys.stdout.isatty() and RICH_AVAILABLE:
-        console = get_console()
-        console.clear()
+    # the screen, e.g. end_response in hybrid mode, can skip this).
+    # Use rich console.clear() when available, otherwise fall back to the
+    # platform `clear`/`cls` command so redraw always clears the terminal.
+    if show_header and sys.stdout.isatty():
+        try:
+            if RICH_AVAILABLE:
+                console = get_console()
+                console.clear()
+            else:
+                os.system('cls' if os.name == 'nt' else 'clear')
+        except Exception:
+            pass
+
+    # session_id header intentionally omitted; interaction ids are printed
+    # immediately before prompts that will create context.
 
     if show_header:
         logo = globals_module.GLOBALS.get('logo')
@@ -472,25 +521,99 @@ def redraw_conversation(messages: List[Dict[str, Any]],
         else:
             print("=== Conversation ===\n")
 
+    last_interaction_id = None
+    last_printed_separator = False
+    last_role = None
+
     for msg in messages:
+        # If we've moved to a new interaction, print a separator between
+        # full interactions (but avoid duplicating if a separator was
+        # just printed by the previous assistant rendering).
+        inter_id = msg.get("interaction_id")
+        # Print a separator when starting a new interaction. Avoid
+        # duplicating separators printed by assistant rendering, but
+        # ensure we print one when the previous message was a tool
+        # result (tools don't emit an HR themselves).
+        need_separator = (
+            inter_id is not None
+            and inter_id != last_interaction_id
+            and last_interaction_id is not None
+            and (not last_printed_separator or last_role == "tool")
+        )
+        if need_separator:
+            try:
+                if renderer and renderer.mode in ("markdown", "hybrid"):
+                    render_markdown("---")
+                else:
+                    print("---")
+            except Exception:
+                pass
+            last_printed_separator = True
+
+        # Proceed to process the current message
         role = msg.get("role", "")
         content = msg.get("content", "")
-
+        is_local = bool(msg.get("local", False))
         if role == "user":
-            # Show user prompt with green >>> if possible
+            # Print an interaction header before the user prompt when the
+            # interaction id changes. This shows `Interaction: #n` colored
+            # the same way as other system messages.
+            printed_header = False
+            try:
+                if inter_id is not None and inter_id != last_interaction_id:
+                    printed_header = True
+                    if renderer:
+                        renderer.render_system_message(f"Interaction: #{inter_id}")
+                    else:
+                        if RICH_AVAILABLE:
+                            console = get_console()
+                            console.print(f"[dim]Interaction: #{inter_id}[/dim]")
+                        else:
+                            print(f"Interaction: #{inter_id}")
+            except Exception:
+                try:
+                    print(f"Interaction: #{inter_id}")
+                except Exception:
+                    pass
+
+            # Show user prompt with green >>> if possible. When we just
+            # printed an interaction header, avoid emitting an extra blank
+            # line before the prompt.
             try:
                 if renderer:
-                    renderer.render_user_message(content)
+                    # Respect local flag by dimming content when available
+                    if RICH_AVAILABLE:
+                        console = get_console()
+                        if is_local:
+                            if not printed_header:
+                                console.print()
+                            color = "green" if globals_module.get_global("model") else "red"
+                            if not printed_header:
+                                console.print()
+                            console.print(f"[{color}]>>>[/{color}] ", end="")
+                            console.print(content, style="dim")
+                        else:
+                            renderer.render_user_message(content, leading_newline=not printed_header)
+                    else:
+                        renderer.render_user_message(content, leading_newline=not printed_header)
                 else:
                     # Fallback
                     if RICH_AVAILABLE:
                         console = get_console()
-                        console.print()
-                        console.print(f"[green]>>>[/green] {content}")
+                        if not printed_header:
+                            console.print()
+                        color = "green" if globals_module.get_global("model") else "red"
+                        console.print(f"[{color}]>>>[/{color}] {content}")
                     else:
-                        print(f"You: {content}\n")
+                        # Use a single-line fallback when header was printed
+                        if printed_header:
+                            print(f">>> {content}\n")
+                        else:
+                            print(f"You: {content}\n")
             except Exception:
                 print(f"You: {content}\n")
+
+            last_printed_separator = False
         elif role == "assistant":
             # Parse thinking blocks and display them above the assistant
             # message when configured to do so. Import locally to avoid
@@ -516,7 +639,19 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 render_content = content
 
             if renderer.mode in ("markdown", "hybrid"):
-                render_markdown(render_content)
+                # Render assistant content; interaction ids are shown before
+                # the user prompt for each interaction, so do not include an
+                # inline id here.
+                if RICH_AVAILABLE and is_local:
+                    console = get_console()
+                    try:
+                        md = Markdown(render_content)
+                        console.print()
+                        console.print(md, style="dim")
+                    except Exception:
+                        render_markdown(render_content)
+                else:
+                    render_markdown(render_content)
                 print()
                 # Separator after assistant final answer (render as markdown)
                 if RICH_AVAILABLE:
@@ -525,12 +660,27 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                     print("---")
                     # Extra blank line after finished response in stream mode
                     print()
+                last_printed_separator = True
             else:
                 # stream mode: plain text
-                render_stream(render_content + "\n")
+                if is_local:
+                    # Dim output for local messages when not using rich
+                    if RICH_AVAILABLE:
+                        console = get_console()
+                        console.print(render_content, style="dim")
+                    else:
+                        try:
+                            # ANSI dim
+                            sys.stdout.write("\033[2m" + render_content + "\033[0m\n")
+                        except Exception:
+                            print(render_content)
+                else:
+                    render_stream(render_content + "\n")
                 print("---")
                 # Extra blank line after finished response in stream mode
                 print()
+                last_printed_separator = True
+            last_printed_separator = True
         elif role == "system":
             # System messages are stored/exported but are hidden by default
             # during redraw. Set `show_system=True` to display them.
@@ -538,7 +688,12 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 continue
             try:
                 if renderer:
-                    renderer.render_system_message(content)
+                    # Respect local styling for system messages as well
+                    if is_local and RICH_AVAILABLE:
+                        console = get_console()
+                        console.print(content, style="dim")
+                    else:
+                        renderer.render_system_message(content)
                 else:
                     # Fallback simple display
                     if RICH_AVAILABLE:
@@ -551,6 +706,7 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                     print(f"[SYSTEM] {content}")
                 except Exception:
                     pass
+            last_printed_separator = False
         elif role == "tool":
             max_chars = int(globals_module.GLOBALS.get("max_tool_output_chars", 16384))
             render_content = content
@@ -562,3 +718,20 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 print()
             else:
                 print(f"[Tool result]:\n{render_content}\n")
+            last_printed_separator = False
+
+        # Update last_interaction_id and last_role now that the message
+        # has been rendered so future iterations can determine whether a
+        # separator is needed.
+        last_role = role
+        last_interaction_id = inter_id
+
+    # Persist the last rendered role and separator state on the
+    # renderer so callers (for example the prompt printer) can decide
+    # whether to emit a separator before printing an upcoming header.
+    try:
+        if renderer is not None:
+            setattr(renderer, '_last_printed_separator', last_printed_separator)
+            setattr(renderer, '_last_role', last_role)
+    except Exception:
+        pass

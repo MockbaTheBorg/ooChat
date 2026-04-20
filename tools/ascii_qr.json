@@ -3,8 +3,7 @@
   "description": "Generate a terminal-safe QR code rendered with monospaced block characters.",
   "read_only": true,
   "destructive": false,
-  "display_directly": true,
-  "result_handling": "local",
+  "kind": "local",
   "parameters": {
     "type": "object",
     "properties": {

@@ -8,6 +8,7 @@ With --silent: output is shown but NOT added to context and NOT wrapped in ---.
 """
 
 import subprocess
+import uuid
 
 
 def register(chat):
@@ -61,14 +62,27 @@ def register(chat):
             if silent:
                 display = body
                 context = None
-            else:
-                display = f"---\n{body}---\n"
-                context = f"Shell command executed: {args}\nOutput: {output[:max_chars]}"
+                return {
+                    "display": display,
+                    "context": context,
+                }
 
-            return {
-                "display": display,
-                "context": context,
-            }
+            # Non-silent: persist a user summary (without duplicating the
+            # raw output) and a tool message containing the output (which
+            # is what the redraw will show). Return a redraw request so
+            # the UI refreshes from saved session state.
+            summary = f"Shell command executed: {args}"
+            # Add as a new user interaction then attach tool output
+            try:
+                chat.context.add_user(summary)
+                call_id = f"manual-shell-{uuid.uuid4().hex[:8]}"
+                chat.context.add_tool_result(call_id, output[:max_chars])
+                if chat.session:
+                    chat.session.save()
+            except Exception:
+                pass
+
+            return {"display": None, "context": None, "redraw": True}
 
         except subprocess.TimeoutExpired:
             return {

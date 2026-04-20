@@ -5,8 +5,7 @@ Tools are defined in JSON files with the following schema:
 - description: Tool description
 - read_only: Whether tool is read-only
 - destructive: Whether tool can modify state
-- display_directly: Show output directly or compact status
-- result_handling: Where tool results go: model, local, or display_only
+- kind: Result handling mode (remote|local)
 - parameters: JSON Schema for parameters
 - command OR argv: How to execute the tool
 - cwd: Optional working directory
@@ -50,9 +49,12 @@ class ToolRegistry:
         # Set defaults
         tool_def.setdefault("read_only", False)
         tool_def.setdefault("destructive", False)
-        tool_def.setdefault("display_directly", False)
-        tool_def.setdefault("result_handling", "model")
         tool_def.setdefault("timeout", None)
+
+        # New schema: `kind` expresses handling mode for tool results.
+        # Values: 'remote'|'local'. Default to 'remote' when omitted.
+        if "kind" not in tool_def:
+            tool_def["kind"] = "remote"
 
         self._tools[name] = tool_def
 
@@ -366,10 +368,14 @@ def resolve_tool_cwd(tool: Dict[str, Any], arguments: Dict[str, Any],
 
 
 def resolve_tool_result_handling(tool: Dict[str, Any]) -> str:
-    """Resolve result handling mode."""
-    handling = tool.get("result_handling")
-    if handling in {"model", "local", "display_only"}:
-        return handling
+    """Resolve result handling mode from `kind`.
+
+    Returns:
+        "local" if the tool is local, otherwise "model".
+    """
+    kind = tool.get("kind")
+    if kind == "local":
+        return "local"
     return "model"
 
 
@@ -412,20 +418,34 @@ def build_tool_status_message(tool_name: str, result: Dict[str, Any]) -> str:
 
 
 def build_tool_followup_message(tool_name: str, tool: Dict[str, Any],
-                                result: Dict[str, Any]) -> Optional[str]:
-    """Build the tool message sent to the model during the current turn."""
+                                result: Dict[str, Any], force_local: bool = False) -> Optional[str]:
+    """Build the tool message sent to the model during the current turn.
+
+    If `force_local` is True the tool is treated as local for follow-up
+    purposes regardless of its declared `kind`.
+    """
     handling = resolve_tool_result_handling(tool)
+    if force_local:
+        handling = "local"
+
     if handling == "model":
         return str(result.get("output", ""))
-    if handling in {"local", "display_only"}:
+    if handling == "local":
         return build_tool_status_message(tool_name, result)
     return None
 
 
 def build_tool_session_message(tool_name: str, tool: Dict[str, Any],
-                               result: Dict[str, Any]) -> Optional[str]:
-    """Build the tool message persisted in session context."""
+                               result: Dict[str, Any], force_local: bool = False) -> Optional[str]:
+    """Build the tool message persisted in session context.
+
+    Raw output is persisted only when the tool is treated as local. If
+    `force_local` is True, persist regardless of tool `kind`.
+    """
     handling = resolve_tool_result_handling(tool)
+    if force_local:
+        handling = "local"
+
     if handling == "local":
         return str(result.get("output", ""))
     return None
@@ -434,7 +454,7 @@ def build_tool_session_message(tool_name: str, tool: Dict[str, Any],
 def build_manual_tool_context_message(tool_name: str, tool: Dict[str, Any],
                                       result: Dict[str, Any]) -> Optional[str]:
     """Build the context entry used by manual /run invocations."""
-    handling = resolve_tool_result_handling(tool)
-    if handling == "display_only":
-        return None
+    # Manual runs always return the raw output to be optionally added to
+    # session context by the caller. The legacy `display_only` mode is no
+    # longer supported.
     return str(result.get("output", ""))

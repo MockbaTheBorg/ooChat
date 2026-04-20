@@ -81,8 +81,5 @@ def _apply_to_context(chat, prompt: str | None) -> None:
         chat.context.add_system(prompt)
         chat.context.system_prompt = prompt
     else:
-        # Remove existing system messages and clear stored prompt
-        chat.context.messages = [
-            m for m in chat.context.messages if m.role != "system"
-        ]
+        # Clear stored system prompt (we no longer store system messages inline)
         chat.context.system_prompt = None

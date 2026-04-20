@@ -1,13 +1,14 @@
 """Run command for ooChat.
 
 Command: /run
-Description: Manually executes a tool and adds context based on the tool's result_handling mode.
+Description: Manually executes a tool and adds context based on the tool's `kind`.
 Parameters: [--silent] <tool_name> [tool_arguments_json]
 Shortcut: "$" (so the user can type $tool_name {"key":"value"})
 With --silent: output is shown but NOT added to context and NOT wrapped in ---.
 """
 
 import json
+import uuid
 
 from modules.tools import build_manual_tool_context_message
 
@@ -89,27 +90,35 @@ def register(chat):
             # Respect configured maximum characters for tool/context output
             max_chars = int(chat.GLOBALS.get("max_tool_output_chars", 16384))
 
-            # Tool display/context flags
-            display_directly = tool.get("display_directly", False)
-
             if silent:
                 display = body
                 context = None
-            else:
-                # Choose display style based on tool hint
-                if display_directly:
-                    display = body
-                else:
-                    display = f"---\n{body}---\n"
+                return {"display": display, "context": context}
 
-                context = build_manual_tool_context_message(tool_name, tool, result)
-                if context is not None:
-                    context = context[:max_chars]
+            # Non-silent: persist context into the session as a user summary
+            # plus a tool message so redraw shows the output between
+            # interactions. Request a redraw rather than returning immediate
+            # display to avoid duplication.
+            try:
+                # Build a short user-visible summary (exclude raw output to
+                # avoid duplication) and persist the raw output as a tool
+                # message so it'll be rendered as a `[Tool result]` block.
+                summary_meta = {
+                    "tool": tool_name,
+                    "args": tool_args,
+                }
+                summary = f"Tool executed: {tool_name} {json.dumps(tool_args)}"
+                summary = summary[:max_chars]
+                chat.context.add_user(summary)
+                call_id = f"manual-run-{uuid.uuid4().hex[:8]}"
+                output = result.get("output", "")[:max_chars]
+                chat.context.add_tool_result(call_id, output)
+                if chat.session:
+                    chat.session.save()
+            except Exception:
+                pass
 
-            return {
-                "display": display,
-                "context": context,
-            }
+            return {"display": None, "context": None, "redraw": True}
 
         except Exception as e:
             return {
@@ -133,8 +142,7 @@ def register(chat):
             "- `--silent` — show output without adding it to context or "
             "wrapping it in `---`\n\n"
             "**Default behavior (no `--silent`):** output is wrapped in `---` "
-            "delimiters unless the tool opts into direct display, and any "
-            "saved context follows the tool's `result_handling` mode.\n\n"
+            "delimiters by default, and any saved context follows the tool's `kind`.\n\n"
             "Note: When added to the AI context the output is truncated to "
             "the `max_tool_output_chars` value configured in `modules.globals` "
             "(default 16384).\n\n"

@@ -3,8 +3,7 @@
   "description": "Show the git status of the repository",
   "read_only": true,
   "destructive": false,
-  "display_directly": false,
-  "result_handling": "model",
+  "kind": "remote",
   "parameters": {
     "type": "object",
     "properties": {},

@@ -40,10 +40,10 @@ def register(chat):
         lines.append(f"**Model:** {chat.GLOBALS.get('model', 'unknown')}")
         lines.append("\n---\n")
 
-        # Add messages
-        for msg in chat.context.messages:
-            role = msg.role
-            content = msg.content
+        # Add messages (flattened view includes local/remote flags)
+        for msg in chat.context.get_flattened_messages():
+            role = msg.get("role")
+            content = msg.get("content", "")
 
             if role == "system":
                 lines.append(f"## System\n\n{content}\n")

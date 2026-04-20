@@ -115,153 +115,159 @@ class Message:
         )
 
 
+class Interaction:
+    """Represents a single interaction (user + assistant/tool round)."""
+
+    def __init__(self, iid: int, kind: str = "remote"):
+        self.id = iid
+        self.kind = kind  # 'remote' or 'local'
+        self.messages: List[Message] = []
+
+    def to_json_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "messages": [m.to_json_dict() for m in self.messages],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Interaction":
+        inter = cls(iid=int(data.get("id", 0)), kind=data.get("kind", "remote"))
+        for m in data.get("messages", []):
+            inter.messages.append(Message.from_dict(m))
+        return inter
+
+
 class Context:
-    """Conversation context manager."""
+    """Conversation context manager using interactions.
+
+    Interactions are stored as an ordered list; each interaction has a
+    numeric `id` and a `kind` that is either `remote` or `local`.
+    """
 
     def __init__(self, system_prompt: str = None):
-        """Initialize context.
-
-        Args:
-            system_prompt: Optional system prompt.
-        """
-        self.messages: List[Message] = []
         self.system_prompt = system_prompt
+        self.interactions: List[Interaction] = []
+        self.next_id = 1
 
-        if system_prompt:
-            self.add_system(system_prompt)
+    def _current_interaction(self) -> Optional[Interaction]:
+        return self.interactions[-1] if self.interactions else None
 
     def add_system(self, content: str) -> None:
-        """Add a system message.
+        """Set the system prompt for the session."""
+        self.system_prompt = content
 
-        Args:
-            content: System message content.
+    def add_user(self, content: str, local: bool = False) -> int:
+        """Start a new interaction with a user message.
+
+        Returns the interaction id.
         """
-        # Remove existing system messages
-        self.messages = [m for m in self.messages if m.role != "system"]
-        self.messages.insert(0, Message("system", content))
-
-    def add_user(self, content: str) -> None:
-        """Add a user message.
-
-        Args:
-            content: User message content.
-        """
-        self.messages.append(Message("user", content))
+        iid = self.next_id
+        self.next_id += 1
+        kind = "local" if local else "remote"
+        inter = Interaction(iid=iid, kind=kind)
+        inter.messages.append(Message("user", content))
+        self.interactions.append(inter)
+        return iid
 
     def add_assistant(self, content: str, tool_calls: List[Dict] = None) -> None:
-        """Add an assistant message.
-
-        Args:
-            content: Assistant message content.
-            tool_calls: Optional list of tool calls.
-        """
-        self.messages.append(Message("assistant", content, tool_calls=tool_calls))
+        """Append an assistant message to the current interaction."""
+        inter = self._current_interaction()
+        if inter is None:
+            # If no interaction exists, create a remote one implicitly
+            inter = Interaction(iid=self.next_id, kind="remote")
+            self.next_id += 1
+            self.interactions.append(inter)
+        inter.messages.append(Message("assistant", content, tool_calls=tool_calls))
 
     def add_tool_result(self, tool_call_id: str, content: str) -> None:
-        """Add a tool result message.
+        """Append a tool result message to the current interaction."""
+        inter = self._current_interaction()
+        if inter is None:
+            # Create implicit interaction if needed
+            inter = Interaction(iid=self.next_id, kind="remote")
+            self.next_id += 1
+            self.interactions.append(inter)
+        inter.messages.append(Message("tool", content, tool_call_id=tool_call_id))
 
-        Args:
-            tool_call_id: ID of the tool call.
-            content: Tool result content.
+    def get_flattened_messages(self, include_local: bool = True) -> List[Dict[str, Any]]:
+        """Flatten interactions into a list of message dicts for display.
+
+        Each message dict includes `interaction_id` and `local` flags so
+        renderers can style local vs remote messages.
         """
-        self.messages.append(Message("tool", content, tool_call_id=tool_call_id))
+        out: List[Dict[str, Any]] = []
+        if self.system_prompt is not None:
+            out.append({"role": "system", "content": self.system_prompt, "interaction_id": 0, "local": False})
 
-    def get_messages(self) -> List[Dict[str, Any]]:
-        """Get messages formatted for API.
+        for inter in self.interactions:
+            for m in inter.messages:
+                d = m.to_dict()
+                d["interaction_id"] = inter.id
+                d["local"] = (inter.kind == "local")
+                out.append(d)
 
-        Returns:
-            List of message dictionaries.
+        return out
+    
+
+    def get_remote_messages(self, include_current_local: bool = False) -> List[Dict[str, Any]]:
+        """Build messages list for model API from remote interactions.
+
+        If `include_current_local` is True, also include messages from the
+        current (last) interaction even if it is marked local. This is used
+        to include in-progress `/local` interactions for immediate followups.
         """
-        return [m.to_dict() for m in self.messages]
+        out: List[Dict[str, Any]] = []
+        if self.system_prompt is not None:
+            out.append({"role": "system", "content": self.system_prompt})
+
+        last = self._current_interaction()
+        for inter in self.interactions:
+            if inter.kind == "remote" or (include_current_local and inter is last):
+                for m in inter.messages:
+                    out.append(m.to_dict())
+
+        return out
 
     def get_message_count(self) -> int:
-        """Get total message count."""
-        return len(self.messages)
+        """Return total number of messages across interactions."""
+        return sum(len(i.messages) for i in self.interactions)
 
     def get_turn_count(self) -> int:
-        """Get number of conversation turns (user + assistant pairs)."""
-        user_count = sum(1 for m in self.messages if m.role == "user")
-        return user_count
+        """Return number of user-initiated interactions (turns)."""
+        return len(self.interactions)
 
     def truncate(self, keep_last: int = 3) -> None:
-        """Truncate context, keeping only recent turns.
-
-        Args:
-            keep_last: Number of recent turns to keep.
-        """
-        if self.system_prompt:
-            # Keep system message
-            system_messages = [m for m in self.messages if m.role == "system"]
-            other_messages = [m for m in self.messages if m.role != "system"]
-
-            # Keep last N turns (user + assistant pairs)
-            # Each turn is user message + assistant response
-            turns = []
-            current_turn = []
-
-            for msg in other_messages:
-                if msg.role == "user":
-                    if current_turn:
-                        turns.append(current_turn)
-                    current_turn = [msg]
-                else:
-                    current_turn.append(msg)
-
-            if current_turn:
-                turns.append(current_turn)
-
-            # Keep only last N turns
-            kept_turns = turns[-keep_last:] if keep_last < len(turns) else turns
-
-            # Flatten
-            kept_messages = [msg for turn in kept_turns for msg in turn]
-
-            self.messages = system_messages + kept_messages
-        else:
-            # Similar logic without system message handling
-            other_messages = self.messages
-            turns = []
-            current_turn = []
-
-            for msg in other_messages:
-                if msg.role == "user":
-                    if current_turn:
-                        turns.append(current_turn)
-                    current_turn = [msg]
-                else:
-                    current_turn.append(msg)
-
-            if current_turn:
-                turns.append(current_turn)
-
-            kept_turns = turns[-keep_last:] if keep_last < len(turns) else turns
-            self.messages = [msg for turn in kept_turns for msg in turn]
+        """Keep only the last N interactions (turns)."""
+        if keep_last <= 0:
+            self.interactions = []
+            return
+        if len(self.interactions) <= keep_last:
+            return
+        self.interactions = self.interactions[-keep_last:]
 
     def save(self, filepath: Path) -> None:
         """Save context to JSON file.
 
-        Args:
-            filepath: Path to save to.
+        Format:
+        {
+          "system_prompt": ...,
+          "next_id": N,
+          "interactions": [ {id, kind, messages: [...]}, ... ]
+        }
         """
         ensure_dir(filepath.parent)
 
         data = {
             "system_prompt": self.system_prompt,
-            "messages": [m.to_json_dict() for m in self.messages],
+            "next_id": self.next_id,
+            "interactions": [i.to_json_dict() for i in self.interactions],
         }
 
         write_text_file(filepath, json.dumps(data, indent=2, ensure_ascii=False))
 
     @classmethod
     def load(cls, filepath: Path) -> "Context":
-        """Load context from JSON file.
-
-        Args:
-            filepath: Path to load from.
-
-        Returns:
-            Context instance.
-        """
         if not filepath.exists():
             return cls()
 
@@ -270,18 +276,16 @@ class Context:
 
         context = cls()
         context.system_prompt = data.get("system_prompt")
+        context.next_id = int(data.get("next_id", 1))
 
-        for msg_data in data.get("messages", []):
-            context.messages.append(Message.from_dict(msg_data))
+        for inter_data in data.get("interactions", []):
+            context.interactions.append(Interaction.from_dict(inter_data))
 
         return context
 
     def clear(self) -> None:
-        """Clear all messages except system prompt."""
-        if self.system_prompt:
-            self.messages = [Message("system", self.system_prompt)]
-        else:
-            self.messages = []
+        """Clear all interactions but keep system prompt."""
+        self.interactions = []
 
 
 def compact_context(context: Context, model: str, keep_last: int = 3,

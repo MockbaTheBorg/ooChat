@@ -67,8 +67,8 @@ A tool file can contain:
 | `description` | no | Description exposed to the model and `/tools`. |
 | `read_only` | no | Marks the tool as read-only. Default `false`. |
 | `destructive` | no | Marks the tool as state-changing or risky. Default `false`. |
-| `display_directly` | no | When true, show tool output directly (not wrapped); respected by execution path. |
-| `result_handling` | no | Where the result goes: `model` sends raw output only to the immediate follow-up model call, `local` sends only status to the follow-up call but persists raw output in session context, and `display_only` sends only status to the follow-up call and persists no raw output. Default `model`. |
+| `kind` | no | Default handling for tool results: `remote` (send raw output to the model for follow-up) or `local` (persist raw output into session context and send only a status to the immediate follow-up). Defaults to `remote` if omitted. |
+
 | `parameters` | no | JSON Schema for function arguments. |
 | `command` | conditional | Shell command template with `{arg}` substitution. |
 | `argv` | conditional | Argument vector form, run without shell interpolation. |
@@ -167,8 +167,8 @@ Current execution path:
 5. Run the subprocess.
 6. Capture stdout.
 7. Append stderr if the exit code is non-zero.
-8. Build the model follow-up tool message from `result_handling`.
-9. Build the persisted session tool message from `result_handling`.
+8. Build the model follow-up tool message from `kind`.
+9. Build the persisted session tool message from `kind`.
 10. Truncate final output to `max_tool_output_chars` (default `16384`).
 
 Returned result includes:
@@ -258,16 +258,15 @@ Modes:
 - Prefer `argv` when argument boundaries matter.
 - Mark tools `read_only: true` whenever they truly do not modify state.
 - Mark tools `destructive: true` for file writes, shell execution, deletes, or anything risky.
-- Use `result_handling: "model"` for tools whose raw output should drive the model's current reasoning.
-- Use `result_handling: "local"` for locally useful artifacts that future prompts may need to reference.
-- Use `result_handling: "display_only"` for user-facing output that should not pollute session context.
+ - Use `kind: "remote"` for tools whose raw output should drive the model's current reasoning.
+ - Use `kind: "local"` for tools whose raw output should be persisted in the session context (and only a compact status sent to the immediate follow-up).
 - Keep descriptions concrete so the model chooses the right tool.
 - Keep schemas narrow; fewer parameters generally produce better tool calls.
 
 ## Common Mistakes
 
-- Forgetting `name`.
-- Defining neither `command` nor `argv`.
-- Marking a write-capable tool as read-only.
-- Forgetting to set `display_directly` or `result_handling` appropriately; `display_directly` only affects immediate rendering, while `result_handling` controls what the current model call sees and what future prompts remember.
-- Using unsafe shell templating in `command` when `argv` would be safer.
+ - Forgetting `name`.
+ - Defining neither `command` nor `argv`.
+ - Marking a write-capable tool as read-only.
+ - Forgetting to set `kind` appropriately; `kind` controls what the current model call sees and what future prompts remember.
+ - Using unsafe shell templating in `command` when `argv` would be safer.

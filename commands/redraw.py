@@ -22,8 +22,8 @@ def register(chat):
         from modules.renderer import redraw_conversation
 
         # Redraw the conversation (include system messages for explicit /redraw)
-        messages = chat.context.get_messages()
-        redraw_conversation(messages, chat.renderer, show_system=True)
+        messages = chat.context.get_flattened_messages()
+        redraw_conversation(messages, chat.renderer, show_system=True, session_id=chat.session.session_id if chat.session else None)
 
         return {"display": None, "context": None}
 

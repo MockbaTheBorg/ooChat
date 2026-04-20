@@ -67,7 +67,6 @@ def register(chat):
                 chat.context.add_system(value)
                 chat.context.system_prompt = value
             else:
-                chat.context.messages = [m for m in chat.context.messages if m.role != "system"]
                 chat.context.system_prompt = None
             try:
                 if getattr(chat, "session", None):
@@ -92,7 +91,6 @@ def register(chat):
                     chat.context.add_system(default)
                     chat.context.system_prompt = default
                 else:
-                    chat.context.messages = [m for m in chat.context.messages if m.role != "system"]
                     chat.context.system_prompt = None
                 try:
                     if getattr(chat, "session", None):

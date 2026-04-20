@@ -70,6 +70,7 @@ class ChatApp:
         self.GLOBALS = globals_module.GLOBALS
         self._quit_requested = False
         self._running = False
+        self._draw_session_on_start = False
 
     def initialize(self, args) -> None:
         """Initialize the application with parsed arguments.
@@ -150,6 +151,9 @@ class ChatApp:
 
             # Load context from session
             self.context = session.context
+            # If we resumed an existing session with messages, request an
+            # automatic redraw on startup so the conversation is shown.
+            self._draw_session_on_start = (action == "resume" and self.context.get_message_count() > 0)
 
             # If the resumed session has a stored system prompt, prefer it
             # and propagate it into GLOBALS so commands/readers see the same
@@ -208,7 +212,7 @@ class ChatApp:
         self.input_handler = create_input_handler(
             self.registry,
             models=self._cached_models,
-            get_messages=lambda: self.session.context.get_messages() if self.session else [],
+            get_messages=lambda: self.session.context.get_flattened_messages() if self.session else [],
             skills=self.skills,
             mouse_support=False,
         )
@@ -258,12 +262,14 @@ class ChatApp:
         for line in logo:
             print(line)
 
-        # If resuming a session with existing messages, redraw the conversation
-        # so the user can see the history before continuing.
-        existing_messages = self.context.get_messages()
-        non_system = [m for m in existing_messages if m.get("role") != "system"]
-        if non_system:
-            redraw_conversation(existing_messages, self.renderer)
+        # If initialization requested a startup redraw (resuming a session),
+        # perform it now so the conversation is shown immediately.
+        if getattr(self, '_draw_session_on_start', False) and self.session:
+            redraw_conversation(self.context.get_flattened_messages(), self.renderer, show_system=True, session_id=self.session.session_id if self.session else None)
+
+        # On startup, show the logo header. When resuming a session that
+        # already has messages, the conversation is redrawn immediately so
+        # the prior context is visible before prompting for input.
 
         # Set up signal handler
         def signal_handler(sig, frame):
@@ -289,6 +295,33 @@ class ChatApp:
 
     def _chat_turn(self) -> None:
         """Execute a single chat turn."""
+        # Show the upcoming interaction id before the prompt only when
+        # the input will be stored (i.e. a model is selected).
+        try:
+            model = self.GLOBALS.get('model')
+            if model:
+                next_iid = getattr(self.context, 'next_id', None)
+                if next_iid is not None:
+                    try:
+                        # If the last persisted message was a tool result and
+                        # a separator wasn't printed during the last redraw,
+                        # emit an HR so the tool output is visually separated
+                        # from the upcoming prompt header.
+                        last_role = getattr(self.renderer, '_last_role', None)
+                        last_sep = getattr(self.renderer, '_last_printed_separator', False)
+                        if last_role == 'tool' and not last_sep:
+                            if self.renderer.mode in ("markdown", "hybrid"):
+                                from modules.renderer import render_markdown
+                                render_markdown("---")
+                            else:
+                                print("---")
+
+                        self.renderer.render_system_message(f"Interaction: #{next_iid}")
+                    except Exception:
+                        print(f"Interaction: #{next_iid}")
+        except Exception:
+            pass
+
         # Get input
         try:
             text = self.input_handler.get_input(">>> ")
@@ -319,7 +352,11 @@ class ChatApp:
                 self.context.add_user(result["context"])
                 self.session.save()
                 from modules.renderer import redraw_conversation
-                redraw_conversation(self.context.get_messages(), self.renderer)
+                redraw_conversation(self.context.get_flattened_messages(), self.renderer, session_id=self.session.session_id if self.session else None)
+            # If the command requests an explicit redraw (e.g. /promote), do it
+            if result.get("redraw"):
+                from modules.renderer import redraw_conversation
+                redraw_conversation(self.context.get_flattened_messages(), self.renderer, session_id=self.session.session_id if self.session else None)
             return
 
         # Normal message - process through pre-filters
@@ -349,7 +386,7 @@ class ChatApp:
         try:
             self.renderer.start_response()
 
-            for chunk in send_chat(model, self.context.get_messages(),
+            for chunk in send_chat(model, self.context.get_remote_messages(),
                                    stream=True, tools=tools, max_tokens=max_tokens):
                 content = chunk.get("content", "")
                 if content:
@@ -379,7 +416,7 @@ class ChatApp:
             self.context.add_assistant(context_text)
 
             # Render the (possibly filtered) display content
-            self.renderer.end_response(display_text, self.context.get_messages())
+            self.renderer.end_response(display_text, self.context.get_flattened_messages(), session_id=self.session.session_id if self.session else None)
 
             # Apply post-filters (command registry then global filters)
             post_text = self.registry.apply_post_filters(context_text)
@@ -390,7 +427,13 @@ class ChatApp:
 
         except APIError as e:
             print(f"\nAPI error: {e}")
-            self.context.messages.pop()  # Remove failed user message
+            # Remove failed user message: drop last message of current interaction
+            try:
+                inter = self.context._current_interaction()
+                if inter and inter.messages and inter.messages[-1].role == 'user':
+                    inter.messages.pop()
+            except Exception:
+                pass
 
     def _tui_on_submit(self, text: str, ui=None) -> None:
         """Callback used by ChatUI when user submits text.
@@ -411,6 +454,10 @@ class ChatApp:
         if result is not None:
             if result.get("display") and ui:
                 ui.append_assistant(result["display"])
+            # If command requests redraw (e.g. /promote), trigger it
+            if result.get("redraw"):
+                from modules.renderer import redraw_conversation
+                redraw_conversation(self.context.get_flattened_messages(), self.renderer, session_id=self.session.session_id if self.session else None)
             return
 
         # Normal message flow (apply global then command filters)
@@ -439,7 +486,7 @@ class ChatApp:
         tool_calls = []
 
         try:
-            for chunk in send_chat(model, self.context.get_messages(), stream=True, tools=tools, max_tokens=max_tokens):
+            for chunk in send_chat(model, self.context.get_remote_messages(), stream=True, tools=tools, max_tokens=max_tokens):
                 content = chunk.get("content", "")
                 if content:
                     # Accumulate full response; UI will receive final text
@@ -476,12 +523,18 @@ class ChatApp:
                 ui.append_assistant(f"API error: {e}")
             else:
                 print(f"\nAPI error: {e}")
-            self.context.messages.pop()
+            try:
+                inter = self.context._current_interaction()
+                if inter and inter.messages and inter.messages[-1].role == 'user':
+                    inter.messages.pop()
+            except Exception:
+                pass
 
     def _handle_tool_calls(self, tool_calls: List[Dict],
                            assistant_content: str = "",
                            tools: List[Dict] = None,
-                           max_tokens: int = None) -> None:
+                           max_tokens: int = None,
+                           include_current_local: bool = False) -> None:
         """Handle tool calls from the model.
 
         Args:
@@ -495,17 +548,17 @@ class ChatApp:
             print("\nNo model selected. Cannot request final response; use /model to select one.")
             return
 
-        base_messages = self.context.get_messages()
+        base_messages = self.context.get_remote_messages(include_current_local=include_current_local)
         turn_followup_messages = []
         turn_session_messages = []
         pending_tool_calls = tool_calls
         pending_assistant_content = assistant_content
-
         while pending_tool_calls:
-            pending_tool_calls = [
-                canonicalize_tool_call(self.tools, call)
-                for call in pending_tool_calls
-            ]
+            pending_tool_calls = [canonicalize_tool_call(self.tools, call) for call in pending_tool_calls]
+            # Re-evaluate current interaction kind each loop in case it changed
+            current_inter = self.context._current_interaction()
+            interaction_is_local = (current_inter is not None and current_inter.kind == "local")
+
             batch_requires_followup = False
             for call in pending_tool_calls:
                 tool_name = call.get("function", {}).get("name")
@@ -513,7 +566,9 @@ class ChatApp:
                 if tool is None:
                     batch_requires_followup = True
                     break
-                if resolve_tool_result_handling(tool) == "model":
+                tool_handling = resolve_tool_result_handling(tool)
+                effective_handling = "local" if (interaction_is_local or tool_handling == "local") else "model"
+                if effective_handling == "model":
                     batch_requires_followup = True
                     break
 
@@ -575,23 +630,63 @@ class ChatApp:
                     )
                     return
 
-                display_directly = tool.get("display_directly", False)
                 result_output = result.get("output", "")
 
-                if display_directly and result_output:
+                # Determine per-call effective handling (local if either side is local)
+                tool_handling = resolve_tool_result_handling(tool)
+                effective_local = (interaction_is_local or tool_handling == "local")
+
+                # Display raw output immediately only for local tool results.
+                # Remote tools should flow back through the model follow-up
+                # request rather than being rendered twice.
+                if result_output and effective_local:
                     try:
+                        # Local + markdown/hybrid: render dim markdown when possible
                         if self.renderer.mode in ("markdown", "hybrid"):
                             fenced_output = f"```text\n{result_output.rstrip()}\n```"
-                            self.renderer.render_assistant_message(fenced_output)
+                            try:
+                                # Use renderer internals for rich rendering when available
+                                from modules import renderer as renderer_module
+                                if renderer_module.RICH_AVAILABLE:
+                                    console = renderer_module.get_console()
+                                    md = renderer_module.Markdown(fenced_output)
+                                    console.print()
+                                    console.print(md, style="dim")
+                                else:
+                                    renderer_module.render_markdown(fenced_output)
+                            except Exception:
+                                try:
+                                    from modules import renderer as renderer_module
+                                    renderer_module.render_markdown(fenced_output)
+                                except Exception:
+                                    print(f"\n{result_output}\n")
                         else:
-                            print(f"\n{result_output}\n")
+                            # Stream/plain mode: dim via ANSI when local.
+                            try:
+                                from modules import renderer as renderer_module
+                                if renderer_module.RICH_AVAILABLE:
+                                    console = renderer_module.get_console()
+                                    console.print(result_output, style="dim")
+                                else:
+                                    sys.stdout.write("\033[2m" + result_output + "\033[0m\n")
+                            except Exception:
+                                sys.stdout.write("\033[2m" + result_output + "\033[0m\n")
                     except Exception:
                         print(f"\n{result_output}\n")
+                    # Mark that we just printed a local tool output so the
+                    # prompt printer can decide whether to emit an HR before
+                    # the upcoming header when no assistant output follows.
+                    try:
+                        if getattr(self, 'renderer', None):
+                            setattr(self.renderer, '_last_role', 'tool')
+                            setattr(self.renderer, '_last_printed_separator', False)
+                    except Exception:
+                        pass
 
                 if not batch_requires_followup:
                     local_statuses.append(build_tool_status_message(tool_name, result))
 
-                followup_message = build_tool_followup_message(tool_name, tool, result)
+                followup_message = build_tool_followup_message(tool_name, tool, result, force_local=effective_local)
                 if followup_message is not None:
                     turn_followup_messages.append({
                         "role": "tool",
@@ -599,7 +694,7 @@ class ChatApp:
                         "tool_call_id": call_id,
                     })
 
-                session_message = build_tool_session_message(tool_name, tool, result)
+                session_message = build_tool_session_message(tool_name, tool, result, force_local=effective_local)
                 if session_message is not None:
                     turn_session_messages.append({
                         "role": "tool",
@@ -648,7 +743,7 @@ class ChatApp:
                     "content": context_text,
                 })
                 self._commit_turn_session_messages(turn_session_messages)
-                self.renderer.end_response(display_text, self.context.get_messages())
+                self.renderer.end_response(display_text, self.context.get_flattened_messages(), session_id=self.session.session_id if self.session else None)
 
                 post_text = self.registry.apply_post_filters(context_text)
                 _ = self.filters.apply_post_receive(post_text)
@@ -676,9 +771,14 @@ class ChatApp:
 
         status_text = "\n".join(statuses)
         try:
+            # Prefer using the renderer (so tests can mock it);
+            # renderer implementations are responsible for styling.
             self.renderer.render_assistant_message(status_text)
         except Exception:
-            print(f"\n{status_text}\n")
+            try:
+                print(f"\n{status_text}\n")
+            except Exception:
+                pass
 
     def _report_tool_failure(self, tool_name: str, message: str,
                              details: str = "") -> None:

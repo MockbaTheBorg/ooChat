@@ -15,6 +15,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
+from . import globals as globals_module
 
 from .utils import get_local_config_dir, ensure_dir
 
@@ -24,6 +25,20 @@ PROMPT_STYLE = Style.from_dict({
     'prompt': 'bold green',
     '': 'ansiwhite',
 })
+
+
+def get_prompt_style() -> Style:
+    """Return a prompt `Style` using green when a model is set, red otherwise.
+
+    This keeps the module-level `PROMPT_STYLE` available for tests/importers
+    while ensuring new prompt sessions use the current GLOBALS['model']
+    value at creation time.
+    """
+    color = 'green' if globals_module.get_global('model') else 'red'
+    return Style.from_dict({
+        'prompt': f'bold {color}',
+        '': 'ansiwhite',
+    })
 
 
 class CommandCompleter(Completer):
@@ -260,7 +275,7 @@ class InputHandler:
             completer=self.completer,
             auto_suggest=AutoSuggestFromHistory(),
             key_bindings=self.bindings,
-            style=PROMPT_STYLE,
+            style=get_prompt_style(),
             multiline=self.multiline,
             mouse_support=self.mouse_support,
             prompt_continuation='... ',

@@ -3,8 +3,7 @@
   "description": "Execute a shell command and return the output",
   "read_only": false,
   "destructive": true,
-  "display_directly": false,
-  "result_handling": "model",
+  "kind": "remote",
   "parameters": {
     "type": "object",
     "properties": {

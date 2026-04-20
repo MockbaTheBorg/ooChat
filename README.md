@@ -339,8 +339,7 @@ Each tool can define:
 - `description`
 - `read_only`
 - `destructive`
-- `display_directly`
-- `result_handling`
+- `kind` (remote|local)
 - `parameters` as JSON Schema
 - either `command` or `argv`
 - optional `cwd`
@@ -561,7 +560,7 @@ Place a `.json` file in one of the skill search paths:
 
 - Skills are JSON files, not Python filter plugins.
 - Manual `/run` now respects `guardrails_mode` (it prompts before destructive tools).
-- Tool fields `display_directly` and `result_handling` are parsed and honored by the tool execution path: `display_directly` controls immediate display, while `result_handling` controls what the current follow-up model call sees and what future prompts retain in session context.
+ - Tool field `kind` controls result handling: `remote` sends raw output to the model for follow-up, `local` persists raw output in session context and sends only a compact status to the immediate follow-up.
 - Skills' `output.display_format` is used to select the renderer mode during skill invocation; the original renderer mode is restored afterward.
 - System messages are stored and exportable; explicit `/redraw` will show system messages (automatic redraws may still hide them).
 - Both `FilterRegistry` and `CommandRegistry` filter hooks are applied in the normal chat flow (global filters run before command-registry filters).
