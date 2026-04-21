@@ -7,7 +7,7 @@ This package contains the 12 core modules for ooChat:
 - api: API communication (HTTP requests, streaming handling)
 - context: Message context management
 - session: Session persistence, locking, listing
-- renderer: Output rendering (stream, markdown, hybrid)
+- renderer: Output rendering (markdown)
 - thinking: Parsing and handling of thinking blocks
 - buffer: Attachment buffer management
 - commands: Command discovery, loading and registration

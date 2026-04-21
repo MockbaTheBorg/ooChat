@@ -12,7 +12,7 @@ Options:
     -t, --tool <file>         Additional tool JSON file (multiple allowed)
     -c, --command <file>      Additional command .py file (multiple allowed)
     -s, --skill <file>        Additional skill .py file (multiple allowed)
-    --render <mode>           Render mode: stream|markdown|hybrid
+    --render <mode>           Render mode: markdown
     --guardrails <mode>       Guardrails: off|read-only|confirm-destructive
     --config <file>           Extra JSON config file
 """
@@ -312,7 +312,7 @@ class ChatApp:
                         last_role = getattr(self.renderer, '_last_role', None)
                         last_sep = getattr(self.renderer, '_last_printed_separator', False)
                         if last_role == 'tool' and not last_sep:
-                            if self.renderer.mode in ("markdown", "hybrid"):
+                            if getattr(self.renderer, 'mode', 'markdown') == "markdown":
                                 from modules.renderer import render_markdown
                                 render_markdown("---")
                             else:
@@ -343,7 +343,7 @@ class ChatApp:
             # Command handled
             if result.get("display"):
                 from modules.renderer import render_markdown
-                if self.renderer.mode in ("hybrid", "markdown"):
+                if getattr(self.renderer, 'mode', 'markdown') == "markdown":
                     render_markdown(result["display"])
                 else:
                     print(result["display"])
@@ -414,7 +414,7 @@ class ChatApp:
                 return
 
             # No tool calls: persist the response then render with a full
-            # conversation redraw so hybrid mode can replace streamed text.
+            # conversation redraw so final markdown replaces streamed artifacts.
             self.context.add_assistant(context_text)
 
             # Render the (possibly filtered) display content
@@ -643,36 +643,24 @@ class ChatApp:
                 # request rather than being rendered twice.
                 if result_output and effective_local:
                     try:
-                        # Local + markdown/hybrid: render dim markdown when possible
-                        if self.renderer.mode in ("markdown", "hybrid"):
-                            fenced_output = f"```text\n{result_output.rstrip()}\n```"
-                            try:
-                                # Use renderer internals for rich rendering when available
-                                from modules import renderer as renderer_module
-                                if renderer_module.RICH_AVAILABLE:
-                                    console = renderer_module.get_console()
-                                    md = renderer_module.Markdown(fenced_output)
-                                    console.print()
-                                    console.print(md, style="dim")
-                                else:
-                                    renderer_module.render_markdown(fenced_output)
-                            except Exception:
-                                try:
-                                    from modules import renderer as renderer_module
-                                    renderer_module.render_markdown(fenced_output)
-                                except Exception:
-                                    print(f"\n{result_output}\n")
-                        else:
-                            # Stream/plain mode: dim via ANSI when local.
+                        # Local: render dim markdown when possible
+                        fenced_output = f"```text\n{result_output.rstrip()}\n```"
+                        try:
+                            # Use renderer internals for rich rendering when available
+                            from modules import renderer as renderer_module
+                            if renderer_module.RICH_AVAILABLE:
+                                console = renderer_module.get_console()
+                                md = renderer_module.Markdown(fenced_output)
+                                console.print()
+                                console.print(md, style="dim")
+                            else:
+                                renderer_module.render_markdown(fenced_output)
+                        except Exception:
                             try:
                                 from modules import renderer as renderer_module
-                                if renderer_module.RICH_AVAILABLE:
-                                    console = renderer_module.get_console()
-                                    console.print(result_output, style="dim")
-                                else:
-                                    sys.stdout.write("\033[2m" + result_output + "\033[0m\n")
+                                renderer_module.render_markdown(fenced_output)
                             except Exception:
-                                sys.stdout.write("\033[2m" + result_output + "\033[0m\n")
+                                print(f"\n{result_output}\n")
                     except Exception:
                         print(f"\n{result_output}\n")
                     # Mark that we just printed a local tool output so the
@@ -876,8 +864,8 @@ def parse_args():
                         help="Additional skill .py file")
 
     # Mode options
-    parser.add_argument("--render", choices=["stream", "markdown", "hybrid"],
-                        help="Render mode")
+    parser.add_argument("--render", choices=["markdown"],
+                        help="Render mode (markdown only)")
     parser.add_argument("--guardrails", choices=["off", "read-only", "confirm-destructive"],
                         help="Guardrails mode")
 

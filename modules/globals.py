@@ -11,7 +11,7 @@ DEFAULTS = {
     'host': 'localhost',
     'port': 11434,
     'openai_mode': False,
-    'render_mode': 'markdown',  # 'stream', 'markdown', 'hybrid'
+    'render_mode': 'markdown',  # only 'markdown' is supported
     'guardrails_mode': 'confirm-destructive',  # 'off', 'confirm-destructive', 'read-only'
     'enable_tools': True,
     'show_thinking': True,

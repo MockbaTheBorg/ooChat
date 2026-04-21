@@ -7,7 +7,7 @@
 
 - Ollama-style chat APIs at `POST /api/chat`
 - OpenAI-compatible chat APIs at `POST /v1/chat/completions`
-- Three render modes: `stream`, `markdown`, `hybrid`
+- Render mode: `markdown` (only)
 - Local session persistence under the current working directory
 - Text-file attachments buffered into the next prompt
 - JSON-defined tools loaded from shipped, global, local, or CLI-specified files
@@ -55,7 +55,7 @@ python oochat.py llama3.2 --host 127.0.0.1 --port 11434
 | `-t`, `--tool FILE` | Load an extra tool JSON file. Can be repeated. |
 | `-c`, `--command FILE` | Load an extra command Python file. Can be repeated. |
 | `-s`, `--skill FILE` | Load an extra skill JSON file. Can be repeated. |
-| `--render MODE` | Set render mode: `stream`, `markdown`, or `hybrid`. |
+| `--render MODE` | Set render mode: `markdown` (only). |
 | `--guardrails MODE` | Set tool guardrails: `off`, `read-only`, or `confirm-destructive`. |
 | `--config FILE` | Load an extra JSON config file after global/local config. |
 
@@ -123,7 +123,7 @@ Only keys present in `modules/globals.py` defaults are loaded from config files.
 | `host` | `localhost` | API host. |
 | `port` | `11434` | API port. |
 | `openai_mode` | `false` | Switch to `/v1/chat/completions`. |
-| `render_mode` | `hybrid` | Output rendering mode. |
+| `render_mode` | `markdown` | Output rendering mode. |
 | `guardrails_mode` | `confirm-destructive` | Tool safety mode. |
 | `enable_tools` | `true` | Whether model tool schemas are sent at all. |
 | `show_thinking` | `true` | Whether parsed `<think>` blocks are shown. |
@@ -141,7 +141,7 @@ Example:
   "host": "localhost",
   "port": 11434,
   "openai_mode": false,
-  "render_mode": "hybrid",
+  "render_mode": "markdown",
   "guardrails_mode": "confirm-destructive",
   "enable_tools": true,
   "show_thinking": true,
@@ -218,17 +218,11 @@ For a normal prompt, `oochat.py` currently does this:
 
 If an API request fails, the just-added user message is removed from context.
 
-## Render Modes
+## Render Mode
 
-Rendering is implemented in `modules/renderer.py`.
+Rendering is implemented in `modules/renderer.py` and is markdown-only.
 
-| Mode | Behavior |
-| --- | --- |
-| `stream` | Prints plain text as chunks arrive. |
-| `markdown` | Buffers the response and renders it with Rich markdown when complete. |
-| `hybrid` | Streams plain text first, then redraws the full conversation as markdown. |
-
-In `hybrid` mode, the final redraw clears the terminal when Rich is available and the output is a TTY.
+- `markdown` buffers the response and renders it with Rich markdown when complete.
 
 ### Thinking Blocks
 
@@ -425,7 +419,7 @@ Template interpolation supports:
 - If `include_in_context` is true, the generated user prompt and assistant reply are appended to the real session.
 
 Skill invocations respect the skill's `output.display_format`: the renderer mode is temporarily set
-for the duration of the skill call (e.g. `markdown` or `stream`) and restored afterward.
+for the duration of the skill call (e.g. `markdown`) and restored afterward.
 
 ### Shipped Skills
 
@@ -522,7 +516,7 @@ Place a `.json` file in one of the skill search paths:
 | `modules/api.py` | HTTP client, request payload building, response normalization, model listing. |
 | `modules/context.py` | In-memory message model, JSON load/save, truncation, clear/reset helpers. |
 | `modules/session.py` | Session directories, metadata, history, lock-file format, resume logic. |
-| `modules/renderer.py` | Stream/markdown/hybrid rendering and full-conversation redraw. |
+| `modules/renderer.py` | Markdown rendering and full-conversation redraw. |
 | `modules/thinking.py` | `<think>` parsing, stripping, display helpers. |
 | `modules/input_handler.py` | Prompt-toolkit session, completion, history, key bindings. |
 | `modules/buffer.py` | One-shot text attachment buffer. |

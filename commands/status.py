@@ -27,7 +27,7 @@ def register(chat):
         host = globals_module.GLOBALS.get("host", "localhost")
         port = globals_module.GLOBALS.get("port", 11434)
         openai_mode = globals_module.GLOBALS.get("openai_mode", False)
-        render_mode = globals_module.GLOBALS.get("render_mode", "hybrid")
+        render_mode = globals_module.GLOBALS.get("render_mode", "markdown")
         guardrails = globals_module.GLOBALS.get("guardrails_mode", "confirm-destructive")
         tools_enabled = globals_module.GLOBALS.get("enable_tools", True)
         tool_count = len(chat.tools.list_tools()) if hasattr(chat.tools, 'list_tools') else 0
@@ -72,7 +72,7 @@ def register(chat):
         long_help=(
             "Displays a summary of the current session state:\n\n"
             "- **Model** and API host/port/mode\n"
-            "- **Render mode** (stream / markdown / hybrid)\n"
+            "- **Render mode** (markdown)\n"
             "- **Guardrails** mode (off / confirm-destructive / read-only)\n"
             "- **Tools** — enabled/disabled, count of available tools\n"
             "- **Thinking** — display and context-inclusion settings\n"

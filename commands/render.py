@@ -1,8 +1,8 @@
 """Render command for ooChat.
 
 Command: /render
-Description: Queries or changes the current render mode.
-Parameters: [mode] - one of: stream, markdown, hybrid. If omitted, show current mode.
+Description: Queries or changes the current render mode (markdown only).
+Parameters: [mode] - 'markdown' (if omitted, show current mode).
 """
 
 from modules import globals as globals_module
@@ -23,11 +23,11 @@ def register(chat):
         """
         args = args.strip().lower()
 
-        valid_modes = ["stream", "markdown", "hybrid"]
+        valid_modes = ["markdown"]
 
         if not args:
             # Show current mode
-            current = globals_module.GLOBALS.get("render_mode", "hybrid")
+            current = globals_module.GLOBALS.get("render_mode", "markdown")
             return {
                 "display": f"\nCurrent render mode: {current}\n"
                            f"Available modes: {', '.join(valid_modes)}\n",
@@ -41,7 +41,7 @@ def register(chat):
                 "context": None,
             }
 
-        # Set new mode
+        # Set new mode (only markdown supported)
         globals_module.GLOBALS["render_mode"] = args
         chat.renderer.set_mode(args)
 
@@ -53,17 +53,13 @@ def register(chat):
     chat.add_command(
         name="/render",
         handler=render_handler,
-        description="Query or change render mode (stream / markdown / hybrid)",
+        description="Query or change render mode (markdown)",
         usage="[mode]",
         long_help=(
-            "Shows or changes the output render mode.\n\n"
+            "Shows or changes the output render mode (markdown only).\n\n"
             "**Usage:** `/render [mode]`\n\n"
             "**Modes:**\n"
-            "- `stream` — plain text, printed in real time as the model responds\n"
-            "- `markdown` — buffers the full response then renders it with "
-            "Rich markdown formatting\n"
-            "- `hybrid` — streams plain text in real time, then redraws the "
-            "full response as markdown when complete (default)\n\n"
+            "- `markdown` — buffers the full response then renders it with Rich markdown formatting\n\n"
             "Called without an argument, shows the current mode."
         ),
     )

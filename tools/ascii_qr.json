@@ -40,7 +40,7 @@
     "required": ["text"],
     "additionalProperties": false
   },
-  "argv": ["python3", "{cwd}/ascii_qr.py", "{text}", "--version", "{version}", "--error", "{error_correction}", "--box", "{box_size}", "--margin", "{margin}"],
+  "argv": ["/home/mockba/llm/venv/bin/python", "{cwd}/ascii_qr.py", "{text}", "--version", "{version}", "--error", "{error_correction}", "--box", "{box_size}", "--margin", "{margin}"],
   "cwd": ".",
   "timeout": 30
 }

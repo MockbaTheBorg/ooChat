@@ -1,9 +1,7 @@
 """Output rendering for ooChat.
 
-Supports three render modes:
-- stream: Real-time streaming as plain text
-- markdown: Buffer and render with rich
-- hybrid: Stream plain text, then redraw with markdown
+Rendering is markdown-only. Legacy render modes were removed; this
+module buffers assistant output and renders final responses as Markdown.
 """
 
 import sys
@@ -43,19 +41,7 @@ def get_console():
 # No external output handler by default; renderers write to stdout.
 
 
-def render_stream(text: str, stream: TextIO = None, end: str = "") -> None:
-    """Render text in stream mode (plain text, no formatting).
-
-    Args:
-        text: Text to render.
-        stream: Output stream. Defaults to stdout.
-        end: String to append after text.
-    """
-    if stream is None:
-        stream = sys.stdout
-
-    stream.write(text + end)
-    stream.flush()
+# Streaming helper removed — rendering is markdown-only.
 
 
 def render_markdown(text: str, stream: TextIO = None) -> None:
@@ -121,9 +107,9 @@ class Renderer:
         """Initialize renderer.
 
         Args:
-            mode: Render mode. Defaults to GLOBALS['render_mode'].
+            mode: Optional mode string. Only 'markdown' is supported.
         """
-        self.mode = mode or globals_module.GLOBALS.get("render_mode", "hybrid")
+        self.mode = mode or globals_module.GLOBALS.get("render_mode", "markdown")
         self._buffer: List[str] = []
         self._streaming = False
         # For handling streamed thinking blocks that may appear in chunks
@@ -144,19 +130,18 @@ class Renderer:
     def set_mode(self, mode: str) -> None:
         """Set render mode.
 
-        Args:
-            mode: One of 'stream', 'markdown', 'hybrid'.
+        Only `markdown` is accepted; attempts to set other modes raise.
         """
-        if mode not in ("stream", "markdown", "hybrid"):
-            raise ValueError(f"Invalid render mode: {mode}")
-        self.mode = mode
+        if mode != "markdown":
+            raise ValueError("Only 'markdown' render mode is supported")
+        self.mode = "markdown"
 
     def get_mode(self) -> str:
         """Get current render mode."""
         return self.mode
 
     def start_response(self) -> None:
-        """Start a new response (clear buffer for markdown/hybrid modes)."""
+        """Start a new response (clear buffer for markdown mode)."""
         self._buffer = []
         self._streaming = True
         self._in_think = False
@@ -165,7 +150,7 @@ class Renderer:
         # If in markdown mode, show a transient 'Thinking...' indicator
         # on TTYs. This is animated but non-blocking and will be stopped
         # by `end_response` before the final content is printed.
-        if self.mode == "markdown" and sys.stdout.isatty():
+        if sys.stdout.isatty():
             self._start_spinner()
 
     def stream_chunk(self, chunk: str) -> None:
@@ -174,11 +159,7 @@ class Renderer:
         Args:
             chunk: Text chunk from API.
         """
-        # We need to avoid streaming thinking blocks inline. Extract any
-        # complete <think>...</think> blocks from the chunk and keep them
-        # in a separate buffer. Partial blocks that span chunks are
-        # accumulated in `self._current_think` until closed.
-
+        # Extract any <think>...</think> blocks and buffer visible text.
         remaining = chunk
         out_parts: List[str] = []
 
@@ -194,42 +175,25 @@ class Renderer:
                 remaining = remaining[idx + len('<think>'):]
                 self._in_think = True
                 self._current_think = ''
-                # continue loop to consume thinking content
                 continue
             else:
-                # we're inside a think block
+                # inside a think block
                 idx = remaining.find('</think>')
                 if idx == -1:
-                    # accumulate and wait for closing tag
                     self._current_think += remaining
                     break
                 # found end tag
                 self._current_think += remaining[:idx]
-                # store completed thinking block
                 self._thinking_blocks.append(self._current_think)
-                # reset thinking state
                 self._in_think = False
                 self._current_think = ''
-                # continue with rest after closing tag
                 remaining = remaining[idx + len('</think>'):]
                 continue
 
         visible_text = ''.join(out_parts)
-
-        if self.mode == "stream":
-            if visible_text:
-                render_stream(visible_text)
-        elif self.mode == "markdown":
-            # Buffer for later rendering (strip thinking blocks)
-            if visible_text:
-                self._buffer.append(visible_text)
-        elif self.mode == "hybrid":
-            # Stream plain text now (without thinking blocks)
-            if visible_text:
-                render_stream(visible_text)
-            # Also buffer for later redraw
-            if visible_text:
-                self._buffer.append(visible_text)
+        # Buffer visible text for final markdown rendering
+        if visible_text:
+            self._buffer.append(visible_text)
 
     def end_response(self, final_text: str = None,
                            messages: List[Dict[str, Any]] = None,
@@ -239,54 +203,33 @@ class Renderer:
         Args:
             final_text: Complete final text (for thinking block stripping, etc.).
             messages: Full conversation messages including the current assistant
-                response.  When provided in hybrid mode the entire conversation
-                is redrawn so no raw streamed text remains on screen.
+                response. When provided, callers may pass the full conversation
+                for a complete redraw.
         """
         self._streaming = False
 
-        # Stop transient spinner (if any) before rendering final content so
-        # the 'Thinking...' indicator disappears.
+        # Stop transient spinner (if any) before rendering final content.
         self._stop_spinner()
 
         # Compose the final display text (buffer + any final_text)
         text = final_text or "".join(self._buffer)
 
-        if self.mode == "markdown":
-            if text.strip():
-                # Display any collected thinking blocks above the markdown
-                try:
-                    from .thinking import display_thinking
-                    if getattr(self, '_thinking_blocks', None):
-                        display_thinking(self._thinking_blocks)
-                except Exception:
-                    pass
+        if text.strip():
+            # Display any collected thinking blocks above the markdown
+            try:
+                from .thinking import display_thinking
+                if getattr(self, '_thinking_blocks', None):
+                    display_thinking(self._thinking_blocks)
+            except Exception:
+                pass
 
-                print()  # Add newline before markdown
-                render_markdown(text)
-                # Separator after assistant final answer (render as markdown
-                # so it's interpreted as an HR when rich is available)
-                if RICH_AVAILABLE:
-                    render_markdown("---")
-                else:
-                    print("---")
-
-        elif self.mode == "stream":
-            # Ensure there's a blank line after streamed responses.
-            print()
-        elif self.mode == "hybrid":
-            if text.strip():
-                if messages:
-                    # Clear screen and redraw the full conversation so no raw
-                    # streamed text remains.  Thinking blocks are already
-                    # stored in the context message; discard the ones
-                    # accumulated in the streaming buffer to avoid duplicates.
-                    if sys.stdout.isatty() and RICH_AVAILABLE:
-                        get_console().clear()
-                    self._thinking_blocks = []
-                    redraw_conversation(messages, self, show_header=False, session_id=session_id)
-                else:
-                    # Fallback: redraw only the current response
-                    self._redraw_markdown(text)
+            print()  # Add newline before markdown
+            render_markdown(text)
+            # Separator after assistant final answer
+            if RICH_AVAILABLE:
+                render_markdown("---")
+            else:
+                print("---")
 
         # Note: thinking blocks collected during streaming are not displayed
         # here to avoid coupling rendering with thinking presentation.
@@ -407,32 +350,18 @@ class Renderer:
         Args:
             content: Message content.
         """
-        if self.mode == "stream":
-            render_stream(content + "\n")
-            # Separator after assistant final answer (render as markdown)
-            if RICH_AVAILABLE:
-                render_markdown("---")
-            else:
-                print("---")
-                # Extra blank line after finished response in stream mode
-                print()
-            try:
-                self._last_role = 'assistant'
-                self._last_printed_separator = True
-            except Exception:
-                pass
-        elif self.mode in ("markdown", "hybrid"):
-            print()  # Add newline
-            render_markdown(content)
-            if RICH_AVAILABLE:
-                render_markdown("---")
-            else:
-                print("---")
-            try:
-                self._last_role = 'assistant'
-                self._last_printed_separator = True
-            except Exception:
-                pass
+        # Markdown rendering for assistant messages
+        print()
+        render_markdown(content)
+        if RICH_AVAILABLE:
+            render_markdown("---")
+        else:
+            print("---")
+        try:
+            self._last_role = 'assistant'
+            self._last_printed_separator = True
+        except Exception:
+            pass
 
     def render_user_message(self, content: str, leading_newline: bool = True) -> None:
         """Render a user message.
@@ -492,13 +421,14 @@ def redraw_conversation(messages: List[Dict[str, Any]],
         messages: List of message dictionaries.
         renderer: Renderer instance. Creates new if None.
         show_header: Print the '=== Conversation ===' banner (default True).
-            Pass False for seamless automatic redraws (e.g. hybrid mode).
+            Pass False to skip header/clear when callers already manage screen
+            updates.
     """
     if renderer is None:
         renderer = Renderer()
 
     # Clear screen (only when invoked standalone; callers that already cleared
-    # the screen, e.g. end_response in hybrid mode, can skip this).
+    # the screen (for example, `end_response`) can skip this).
     # Use rich console.clear() when available, otherwise fall back to the
     # platform `clear`/`cls` command so redraw always clears the terminal.
     if show_header and sys.stdout.isatty():
@@ -542,7 +472,7 @@ def redraw_conversation(messages: List[Dict[str, Any]],
         )
         if need_separator:
             try:
-                if renderer and renderer.mode in ("markdown", "hybrid"):
+                if renderer and getattr(renderer, 'mode', 'markdown') == "markdown":
                     render_markdown("---")
                 else:
                     print("---")
@@ -638,7 +568,7 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 # Fallback: render raw content
                 render_content = content
 
-            if renderer.mode in ("markdown", "hybrid"):
+            if getattr(renderer, 'mode', 'markdown') == "markdown":
                 # Render assistant content; interaction ids are shown before
                 # the user prompt for each interaction, so do not include an
                 # inline id here.
@@ -662,22 +592,20 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                     print()
                 last_printed_separator = True
             else:
-                # stream mode: plain text
+                # Non-markdown fallback: print plain content
                 if is_local:
-                    # Dim output for local messages when not using rich
                     if RICH_AVAILABLE:
                         console = get_console()
                         console.print(render_content, style="dim")
                     else:
                         try:
-                            # ANSI dim
                             sys.stdout.write("\033[2m" + render_content + "\033[0m\n")
                         except Exception:
                             print(render_content)
                 else:
-                    render_stream(render_content + "\n")
+                    # Fallback for non-markdown rendering: print raw
+                    print(render_content)
                 print("---")
-                # Extra blank line after finished response in stream mode
                 print()
                 last_printed_separator = True
             last_printed_separator = True
@@ -713,7 +641,7 @@ def redraw_conversation(messages: List[Dict[str, Any]],
             if len(render_content) > max_chars:
                 render_content = render_content[:max_chars] + "... (truncated)"
 
-            if renderer.mode in ("markdown", "hybrid"):
+            if getattr(renderer, 'mode', 'markdown') == "markdown":
                 render_markdown(f"[Tool result]:\n```text\n{render_content.rstrip()}\n```")
                 print()
             else:

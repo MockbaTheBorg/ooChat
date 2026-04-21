@@ -130,10 +130,8 @@ def register(chat):
             # Respect per-skill display_format by temporarily overriding
             # the renderer mode (restore after rendering).
             orig_mode = chat.renderer.get_mode()
-            if getattr(skill, 'display_format', None) == 'markdown':
-                chat.renderer.set_mode('markdown')
-            elif getattr(skill, 'display_format', None) == 'plain':
-                chat.renderer.set_mode('stream')
+            # All skill display formats render as markdown in the new flow
+            chat.renderer.set_mode('markdown')
 
             chat.renderer.start_response()
             for chunk in send_chat(model, messages, stream=True):
