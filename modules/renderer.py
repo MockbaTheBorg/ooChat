@@ -8,7 +8,10 @@ import sys
 import threading
 import time
 import os
-from typing import Any, Dict, List, Optional, TextIO
+import select
+import termios
+import tty
+from typing import Any, Callable, Dict, List, Optional, TextIO
 
 from . import globals as globals_module
 # Avoid importing thinking module at top-level to prevent circular imports.
@@ -29,6 +32,14 @@ _console = None
 # Spinner sequence (single string so it can be easily modified)
 SPINNER_SEQUENCE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
+# Event set when the user interrupts a spinning operation (ESC pressed)
+_spinner_interrupted: threading.Event = threading.Event()
+# Indicates whether the "process interrupted" message was already printed
+# by the spinner thread to avoid duplicate messages when the main loop
+# also checks the interrupt flag.
+_spinner_message_shown: threading.Event = threading.Event()
+_spinner_interrupt_callback: Optional[Callable[[], None]] = None
+
 
 def get_console():
     """Get or create rich console instance."""
@@ -36,6 +47,44 @@ def get_console():
     if _console is None and RICH_AVAILABLE:
         _console = Console()
     return _console
+
+
+def clear_spinner_interrupt() -> None:
+    """Clear the module-level spinner interrupt flag."""
+    try:
+        _spinner_interrupted.clear()
+    except Exception:
+        pass
+
+
+def clear_spinner_message_shown() -> None:
+    """Clear the module-level spinner message shown flag."""
+    try:
+        _spinner_message_shown.clear()
+    except Exception:
+        pass
+
+
+def spinner_was_interrupted() -> bool:
+    """Return True if a spinner interrupt (ESC) was detected."""
+    try:
+        return _spinner_interrupted.is_set()
+    except Exception:
+        return False
+
+
+def spinner_message_was_shown() -> bool:
+    """Return True if the spinner thread already printed the interrupt message."""
+    try:
+        return _spinner_message_shown.is_set()
+    except Exception:
+        return False
+
+
+def set_spinner_interrupt_callback(callback: Optional[Callable[[], None]]) -> None:
+    """Register a callback invoked when ESC interrupts a spinner."""
+    global _spinner_interrupt_callback
+    _spinner_interrupt_callback = callback
 
 
 # No external output handler by default; renderers write to stdout.
@@ -151,6 +200,15 @@ class Renderer:
         # on TTYs. This is animated but non-blocking and will be stopped
         # by `end_response` before the final content is printed.
         if sys.stdout.isatty():
+            # Clear any prior interrupt state and start spinner
+            try:
+                clear_spinner_interrupt()
+            except Exception:
+                pass
+            try:
+                clear_spinner_message_shown()
+            except Exception:
+                pass
             self._start_spinner()
 
     def stream_chunk(self, chunk: str) -> None:
@@ -302,22 +360,96 @@ class Renderer:
         except Exception:
             pass
 
-        while not stop_event.is_set():
+        fd = None
+        old_attrs = None
+        raw_mode = False
+        # Prepare cbreak input mode so we can detect single-key presses
+        try:
+            if sys.stdin.isatty():
+                fd = sys.stdin.fileno()
+                old_attrs = termios.tcgetattr(fd)
+                tty.setcbreak(fd)
+                raw_mode = True
+        except Exception:
+            raw_mode = False
+
+        try:
+            while not stop_event.is_set():
+                try:
+                    # Print only the spinner character (no text label)
+                    sys.stdout.write("\r" + chars[i % len(chars)] + " ")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+                i += 1
+
+                # Wait for a short interval; if input is available read it
+                if raw_mode and fd is not None:
+                    try:
+                        r, _, _ = select.select([fd], [], [], 0.12)
+                        if r:
+                            try:
+                                b = os.read(fd, 1)
+                            except Exception:
+                                try:
+                                    b = sys.stdin.read(1)
+                                except Exception:
+                                    b = None
+                            if b:
+                                # Detect ESC (single-byte 0x1b)
+                                if (isinstance(b, bytes) and b == b"\x1b") or (isinstance(b, str) and b == "\x1b"):
+                                    try:
+                                        _spinner_interrupted.set()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        if callable(_spinner_interrupt_callback):
+                                            _spinner_interrupt_callback()
+                                    except Exception:
+                                        pass
+                                    # Print interrupt message from spinner thread
+                                    try:
+                                        if RICH_AVAILABLE:
+                                            console = get_console()
+                                            # Use a plain print via console to keep coloring
+                                            console.print("[red]process interrupted[/red]")
+                                        else:
+                                            sys.stdout.write("\033[31mprocess interrupted\033[0m\n")
+                                            sys.stdout.flush()
+                                        try:
+                                            _spinner_message_shown.set()
+                                        except Exception:
+                                            pass
+                                    except Exception:
+                                        try:
+                                            sys.stdout.write("\033[31mprocess interrupted\033[0m\n")
+                                            sys.stdout.flush()
+                                        except Exception:
+                                            pass
+                                    try:
+                                        stop_event.set()
+                                    except Exception:
+                                        pass
+                                    break
+                    except Exception:
+                        # On select/read issues, fallback to timed wait
+                        stop_event.wait(0.12)
+                else:
+                    stop_event.wait(0.12)
+        finally:
+            # Clear the spinner line
             try:
-                # Print only the spinner character (no text label)
-                sys.stdout.write("\r" + chars[i % len(chars)] + " ")
+                sys.stdout.write("\r" + " " * 4 + "\r")
                 sys.stdout.flush()
             except Exception:
                 pass
-            i += 1
-            stop_event.wait(0.12)
 
-        # Clear the spinner line
-        try:
-            sys.stdout.write("\r" + " " * 4 + "\r")
-            sys.stdout.flush()
-        except Exception:
-            pass
+            # Restore terminal attributes if we changed them
+            try:
+                if raw_mode and fd is not None and old_attrs is not None:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+            except Exception:
+                pass
 
     def _start_spinner(self) -> None:
         """Start the spinner thread (no-op if already running)."""

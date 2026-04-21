@@ -383,6 +383,20 @@ class ChatApp:
         tool_calls = []
 
         try:
+            # Clear any prior spinner interrupt state before starting
+            try:
+                from modules import renderer as renderer_module
+                try:
+                    renderer_module.clear_spinner_interrupt()
+                except Exception:
+                    pass
+                try:
+                    renderer_module.clear_spinner_message_shown()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
             self.renderer.start_response()
 
             for chunk in send_chat(model, self.context.get_remote_messages(),
@@ -394,6 +408,58 @@ class ChatApp:
 
                 if chunk.get("tool_calls"):
                     tool_calls.extend(chunk["tool_calls"])
+
+            # If the user interrupted the spinner (ESC), abort the request
+            try:
+                from modules import renderer as renderer_module
+                interrupted = False
+                try:
+                    interrupted = bool(renderer_module.spinner_was_interrupted())
+                except Exception:
+                    interrupted = False
+                if interrupted:
+                    # Ensure spinner is stopped
+                    try:
+                        self.renderer._stop_spinner()
+                    except Exception:
+                        pass
+                    # If spinner thread did not already print the message,
+                    # print it here from the main thread so the user sees it.
+                    try:
+                        if not renderer_module.spinner_message_was_shown():
+                            try:
+                                if renderer_module.RICH_AVAILABLE:
+                                    console = renderer_module.get_console()
+                                    console.print("[red]process interrupted[/red]")
+                                else:
+                                    sys.stdout.write("\033[31mprocess interrupted\033[0m\n")
+                                    sys.stdout.flush()
+                            except Exception:
+                                try:
+                                    sys.stdout.write("\033[31mprocess interrupted\033[0m\n")
+                                    sys.stdout.flush()
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    # Remove the last user message to mirror API error behavior
+                    try:
+                        inter = self.context._current_interaction()
+                        if inter and inter.messages and inter.messages[-1].role == 'user':
+                            inter.messages.pop()
+                    except Exception:
+                        pass
+                    try:
+                        renderer_module.clear_spinner_interrupt()
+                    except Exception:
+                        pass
+                    try:
+                        renderer_module.clear_spinner_message_shown()
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                pass
 
             # Process thinking blocks first so thinking is shown before response
             display_text, context_text, thinking_blocks = process_assistant_response(response_text, include_blocks=True)

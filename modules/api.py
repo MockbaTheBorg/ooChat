@@ -8,7 +8,9 @@ Both support streaming responses.
 """
 
 import json
+import queue
 import sys
+import threading
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 import requests
@@ -133,37 +135,134 @@ class APIClient:
 
         headers = {"Content-Type": "application/json"}
 
-        try:
-            response = requests.post(
-                self.endpoint,
-                json=payload,
-                headers=headers,
-                stream=stream,
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-        except RequestException as e:
-            raise APIError(f"API request failed: {e}")
-
         if stream:
-            pending_tool_calls: Dict[int, Dict[str, Any]] = {}
-            for line in response.iter_lines():
-                if line:
+            try:
+                from . import renderer as renderer_module
+            except Exception:
+                renderer_module = None
+            stream_queue: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
+            response_holder: Dict[str, Any] = {}
+
+            def _close_active_response() -> None:
+                active_response = response_holder.get("response")
+                if active_response is None:
+                    return
+                try:
+                    active_response.close()
+                except Exception:
+                    pass
+
+            def _stream_worker() -> None:
+                pending_tool_calls: Dict[int, Dict[str, Any]] = {}
+                response = None
+                try:
+                    response = requests.post(
+                        self.endpoint,
+                        json=payload,
+                        headers=headers,
+                        stream=True,
+                        timeout=self.timeout,
+                    )
+                    response_holder["response"] = response
+                    response.raise_for_status()
+
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        try:
+                            payload_line = self._decode_stream_line(line)
+                            if payload_line is None:
+                                continue
+                            chunk = json.loads(payload_line)
+                            normalized = self._normalize_chunk(chunk)
+                            if self.openai_mode:
+                                normalized = self._finalize_openai_tool_calls(normalized, pending_tool_calls)
+                            if not normalized.get("content") and not normalized.get("tool_calls") and not normalized.get("done"):
+                                continue
+                            stream_queue.put(("chunk", normalized))
+                        except json.JSONDecodeError:
+                            continue
+                except RequestException as e:
+                    stream_queue.put(("error", APIError(f"API request failed: {e}")))
+                except Exception as e:
+                    stream_queue.put(("error", APIError(f"API request failed: {e}")))
+                finally:
                     try:
-                        payload_line = self._decode_stream_line(line)
-                        if payload_line is None:
-                            continue
-                        chunk = json.loads(payload_line)
-                        normalized = self._normalize_chunk(chunk)
-                        if self.openai_mode:
-                            normalized = self._finalize_openai_tool_calls(normalized, pending_tool_calls)
-                        if not normalized.get("content") and not normalized.get("tool_calls") and not normalized.get("done"):
-                            continue
-                        yield normalized
-                    except json.JSONDecodeError as e:
-                        # Skip malformed lines
+                        if response is not None:
+                            response.close()
+                    except Exception:
+                        pass
+                    stream_queue.put(("done", None))
+
+            worker = threading.Thread(target=_stream_worker, daemon=True)
+            try:
+                if renderer_module is not None:
+                    try:
+                        renderer_module.set_spinner_interrupt_callback(_close_active_response)
+                    except Exception:
+                        pass
+                worker.start()
+
+                while True:
+                    interrupted = False
+                    try:
+                        if renderer_module is not None:
+                            interrupted = bool(renderer_module.spinner_was_interrupted())
+                    except Exception:
+                        interrupted = False
+
+                    if interrupted:
+                        _close_active_response()
+                        break
+
+                    try:
+                        item_type, item_payload = stream_queue.get(timeout=0.1)
+                    except queue.Empty:
                         continue
+
+                    if item_type == "chunk":
+                        yield item_payload
+                        continue
+
+                    if item_type == "error":
+                        interrupted = False
+                        try:
+                            if renderer_module is not None:
+                                interrupted = bool(renderer_module.spinner_was_interrupted())
+                        except Exception:
+                            interrupted = False
+                        if not interrupted:
+                            raise item_payload
+                        break
+
+                    if item_type == "done":
+                        break
+            finally:
+                if renderer_module is not None:
+                    try:
+                        renderer_module.set_spinner_interrupt_callback(None)
+                    except Exception:
+                        pass
+                try:
+                    _close_active_response()
+                except Exception:
+                    pass
+                try:
+                    worker.join(timeout=0.5)
+                except Exception:
+                    pass
         else:
+            try:
+                response = requests.post(
+                    self.endpoint,
+                    json=payload,
+                    headers=headers,
+                    stream=False,
+                    timeout=self.timeout
+                )
+                response.raise_for_status()
+            except RequestException as e:
+                raise APIError(f"API request failed: {e}")
             yield self._normalize_chunk(response.json())
 
     def _decode_stream_line(self, line: bytes) -> Optional[str]:
