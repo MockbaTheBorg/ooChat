@@ -4,6 +4,7 @@ Command: /redraw
 Description: Immediately redraws the current conversation using the current render mode.
 Parameters: none
 """
+import os
 
 
 def register(chat):
@@ -21,6 +22,13 @@ def register(chat):
         """
         from modules.renderer import redraw_conversation
 
+        # Clear the terminal before redrawing so the conversation is
+        # repainted on a clean screen.
+        try:
+            os.system('cls' if os.name == 'nt' else 'clear')
+        except Exception:
+            pass
+
         # Redraw the conversation (include system messages for explicit /redraw)
         messages = chat.context.get_flattened_messages()
         redraw_conversation(messages, chat.renderer, show_system=True, session_id=chat.session.session_id if chat.session else None)
@@ -30,12 +38,10 @@ def register(chat):
     chat.add_command(
         name="/redraw",
         handler=redraw_handler,
-        description="Redraw conversation with current render mode",
+        description="Redraw conversation",
         long_help=(
-            "Clears the terminal and redraws the entire conversation using the "
-            "current render mode.\n\n"
-            "Useful after switching render modes with `/render`, or to clean up "
-            "garbled output.\n\n"
+            "Clears the terminal and redraws the entire conversation.\n\n"
+            "Useful to clean up garbled output or after changing renderer settings.\n\n"
             "Command outputs (e.g. from `/?` or `/status`) are ephemeral and "
             "will not appear after a redraw unless they were added to context."
         ),

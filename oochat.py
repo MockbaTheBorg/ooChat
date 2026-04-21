@@ -12,7 +12,6 @@ Options:
     -t, --tool <file>         Additional tool JSON file (multiple allowed)
     -c, --command <file>      Additional command .py file (multiple allowed)
     -s, --skill <file>        Additional skill .py file (multiple allowed)
-    --render <mode>           Render mode: markdown
     --guardrails <mode>       Guardrails: off|read-only|confirm-destructive
     --config <file>           Extra JSON config file
 """
@@ -88,8 +87,6 @@ class ChatApp:
             cli_overrides['port'] = args.port
         if args.openai:
             cli_overrides['openai_mode'] = True
-        if args.render:
-            cli_overrides['render_mode'] = args.render
         if args.guardrails:
             cli_overrides['guardrails_mode'] = args.guardrails
 
@@ -864,8 +861,6 @@ def parse_args():
                         help="Additional skill .py file")
 
     # Mode options
-    parser.add_argument("--render", choices=["markdown"],
-                        help="Render mode (markdown only)")
     parser.add_argument("--guardrails", choices=["off", "read-only", "confirm-destructive"],
                         help="Guardrails mode")
 
@@ -877,6 +872,13 @@ def parse_args():
 
 def main():
     """Main entry point."""
+    # Clear the terminal immediately on program start so the logo
+    # (printed later in `run`) appears on a clean screen.
+    try:
+        os.system('cls' if os.name == 'nt' else 'clear')
+    except Exception:
+        pass
+
     args = parse_args()
 
     app = ChatApp()

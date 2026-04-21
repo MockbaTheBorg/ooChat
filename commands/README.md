@@ -136,7 +136,6 @@ These show information but do not alter context:
 
 These change runtime or session state:
 
-- `/render`
 - `/think`
 - `/system`
 - `/globals`
@@ -239,7 +238,6 @@ That means:
 | `model.py` | `/model` | List models or switch model. |
 | `quit.py` | `/exit`, `/bye` | Aliases for `/quit`. |
 | `redraw.py` | `/redraw` | Redraw the stored conversation. |
-| `render.py` | `/render` | Show or set render mode. |
 | `reset.py` | `/reset` | Clear session context. |
 | `run.py` | `/run`, `$` | Manually execute a registered tool. |
 | `shell.py` | `/shell`, `!` | Run a shell command. |

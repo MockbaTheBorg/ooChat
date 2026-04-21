@@ -55,7 +55,6 @@ python oochat.py llama3.2 --host 127.0.0.1 --port 11434
 | `-t`, `--tool FILE` | Load an extra tool JSON file. Can be repeated. |
 | `-c`, `--command FILE` | Load an extra command Python file. Can be repeated. |
 | `-s`, `--skill FILE` | Load an extra skill JSON file. Can be repeated. |
-| `--render MODE` | Set render mode: `markdown` (only). |
 | `--guardrails MODE` | Set tool guardrails: `off`, `read-only`, or `confirm-destructive`. |
 | `--config FILE` | Load an extra JSON config file after global/local config. |
 
@@ -265,7 +264,6 @@ Every command file under `commands/` exports `register(chat)`. Later-loaded comm
 
 | Command | Shortcut | Usage | Behavior |
 | --- | --- | --- | --- |
-| `/render` | none | `/render [mode]` | Show or change render mode. |
 | `/redraw` | none | `/redraw` | Repaint the current stored conversation. |
 | `/think` | none | `/think [on|off|show|hide|context|nocontext]` | Control display and retention of `<think>` blocks. |
 | `/status` | none | `/status` | Show model, API, render mode, tools, thinking, attachments, and session paths. |
@@ -540,7 +538,6 @@ Place a `.json` file in one of the skill search paths:
 | `commands/model.py` | `/model` |
 | `commands/quit.py` | `/exit`, `/bye` |
 | `commands/redraw.py` | `/redraw` |
-| `commands/render.py` | `/render` |
 | `commands/reset.py` | `/reset` |
 | `commands/run.py` | `/run`, `$` |
 | `commands/shell.py` | `/shell`, `!` |
