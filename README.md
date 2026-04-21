@@ -22,6 +22,8 @@
 - `prompt_toolkit`
 - `rich`
 
+- `tiktoken` (optional, recommended for accurate token counts in the status line)
+
 Install dependencies:
 
 ```bash
@@ -102,6 +104,7 @@ Input is handled by `prompt_toolkit` with:
 - `/model <name>` model-name completion
 - `%skill` name completion
 - `PageUp` and `PageDown` to page through conversation slices in the terminal redraw view
+- persistent status line at the bottom showing the current selected model (left) and the context size in tokens and bytes (right)
 
 ## Configuration
 
@@ -220,6 +223,9 @@ If an API request fails, the just-added user message is removed from context.
 ## Render Mode
 
 Rendering is implemented in `modules/renderer.py` and is markdown-only.
+
+Note: runtime switching of render modes via a `/render` command or the
+`--render` CLI flag has been removed; output rendering is markdown-only.
 
 - `markdown` buffers the response and renders it with Rich markdown when complete.
 

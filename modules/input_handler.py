@@ -174,7 +174,7 @@ def create_key_bindings(multiline: bool = True, get_messages=None) -> KeyBinding
 
         # PageUp/PageDown: if a get_messages callable is provided, use it
         # to show a page of conversation history. This provides paging
-        # in regular terminal mode without requiring a full-screen app.
+        # in regular terminal mode without requiring a separate UI mode.
         page_size = 10
 
         @bindings.add('pageup')
