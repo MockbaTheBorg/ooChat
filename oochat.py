@@ -25,6 +25,8 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
+__version__ = "1.0.1"
+
 # Add parent directory to path for module imports
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -251,10 +253,10 @@ class ChatApp:
 
         logo = [
             "\n",
-            f" {color_start}▐◢▇▆▆▇◣▌{color_end} ooChat - TUI chat for ooProxy",
-            f" {color_start}▐█▚  ▞█▌{color_end} Model: {self.GLOBALS.get('model')}",
-            f" {color_start}◥██████◤{color_end} Session: {self.session.session_id}",
-            f"  {color_start}▝▀▆▆▀▘{color_end}  Type /? or /help for commands. Ctrl+C to exit.\n"
+            f"  {color_start}▐◢▇▆▆▇◣▌{color_end} ooChat v{__version__} - TUI chat for ooProxy",
+            f"  {color_start}▐█▚  ▞█▌{color_end} Model: {self.GLOBALS.get('model')}",
+            f"  {color_start}◥██████◤{color_end} Session: {self.session.session_id}",
+            f"   {color_start}▝▀▆▆▀▘{color_end}  Type /? or /help for commands. Ctrl+C to exit.\n"
         ]
 
         self.GLOBALS['logo'] = "\n".join(logo)
