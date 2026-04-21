@@ -7,6 +7,9 @@ Provides:
 """
 
 import os
+import json
+import re
+import shutil
 from typing import Dict, List, Optional
 
 from prompt_toolkit import PromptSession
@@ -55,6 +58,7 @@ class CommandCompleter(Completer):
         self.registry = registry
         self.models = models or []
         self.skills = skills
+
 
     def get_completions(self, document, complete_event):
         """Generate completions for the current input.
@@ -241,6 +245,10 @@ class InputHandler:
         self.models = models or []
         self.skills = skills
 
+        # Callable to retrieve messages for context size calculations.
+        # Expected to return a list of message dicts (flattened messages).
+        self.get_messages = get_messages if callable(get_messages) else (lambda: [])
+
         # Mouse support: default to False to avoid capturing scroll events
         # unless explicitly enabled (e.g., in a full TUI mode).
         self.mouse_support = mouse_support if mouse_support is not None else False
@@ -294,7 +302,10 @@ class InputHandler:
             self.session = self._create_session()
 
         try:
-            text = self.session.prompt(prompt)
+            # Provide a bottom toolbar that shows the current model on the
+            # left and an approximate context size (tokens and bytes) on the
+            # right. The toolbar is updated each time the prompt is rendered.
+            text = self.session.prompt(prompt, bottom_toolbar=self._bottom_toolbar)
             # Preserve pasted newlines and leading/trailing whitespace so
             # multi-line pastes are not trimmed by the application.
             return text
@@ -311,6 +322,138 @@ class InputHandler:
         """
         if self.session and self.session.history:
             self.session.history.append_string(text)
+
+    def _estimate_tokens(self, messages: List[Dict]) -> int:
+        """Estimate token count from a list of message dicts.
+
+        Prefer `tiktoken` when available for a more accurate token count;
+        otherwise fall back to a whitespace-based heuristic.
+        """
+        # Only consider messages that will be sent to the model. Exclude
+        # interactions marked local since they are not part of the remote
+        # context.
+        try:
+            messages = [m for m in messages if not bool(m.get('local', False))]
+        except Exception:
+            pass
+
+        # Try tiktoken first (more accurate when available)
+        try:
+            import tiktoken
+            model = globals_module.get_global('model') or ""
+
+            try:
+                encoding = tiktoken.encoding_for_model(model) if model else None
+            except Exception:
+                try:
+                    encoding = tiktoken.get_encoding("cl100k_base")
+                except Exception:
+                    encoding = None
+
+            if encoding is not None:
+                # Heuristic adapted for chat-style messages: add a small
+                # per-message overhead and count encoded tokens for each
+                # message field. This mirrors common counting recipes for
+                # chat models and yields a reasonable estimate.
+                tokens_per_message = 4
+                tokens_per_name = -1
+                total = 0
+
+                for m in messages:
+                    if isinstance(m, dict):
+                        total += tokens_per_message
+                        for k, v in m.items():
+                            if v is None:
+                                continue
+                            if isinstance(v, (dict, list)):
+                                s = json.dumps(v, ensure_ascii=False)
+                            else:
+                                s = str(v)
+                            try:
+                                total += len(encoding.encode(s))
+                            except Exception:
+                                # Fallback to length of text when encoding fails
+                                total += len(s.split())
+                            if k == 'name':
+                                total += tokens_per_name
+                    else:
+                        # Non-dict messages: encode string form
+                        s = str(m)
+                        try:
+                            total += len(encoding.encode(s))
+                        except Exception:
+                            total += len(s.split())
+
+                total += 2
+                return int(total)
+        except Exception:
+            # tiktoken not available or failed; fall back below
+            pass
+
+        # Fallback: simple whitespace-based token estimate
+        try:
+            parts = []
+            for m in messages:
+                if isinstance(m, dict):
+                    parts.append(str(m.get('content', '')))
+                else:
+                    parts.append(str(m))
+            text = "\n".join(parts)
+            toks = re.findall(r"\S+", text)
+            return len(toks)
+        except Exception:
+            return 0
+
+    def _human_bytes(self, n: int) -> str:
+        """Format byte count into human-readable string."""
+        try:
+            if n < 1024:
+                return f"{n}B"
+            for unit in ['KB', 'MB', 'GB', 'TB']:
+                n = n / 1024.0
+                if n < 1024.0:
+                    return f"{n:.1f}{unit}"
+            return f"{n:.1f}PB"
+        except Exception:
+            return f"{n}B"
+
+    def _bottom_toolbar(self):
+        """Callable used by prompt_toolkit to render the bottom toolbar.
+
+        Shows the current selected model (left) and the approximate context
+        size in tokens and bytes (right), aligned to the terminal width.
+        """
+        try:
+            model = globals_module.get_global('model') or 'none'
+            msgs = []
+            try:
+                msgs = list(self.get_messages() or [])
+            except Exception:
+                msgs = []
+
+            # Compute byte size of the JSON representation of messages
+            try:
+                b = json.dumps(msgs, ensure_ascii=False).encode('utf-8')
+                size_bytes = len(b)
+            except Exception:
+                # Fallback: approximate by summing content lengths
+                size_bytes = sum(len(str(m.get('content', '')) if isinstance(m, dict) else str(m)) for m in msgs)
+
+            tokens = self._estimate_tokens(msgs)
+
+            right = f"Tokens: {tokens} · {self._human_bytes(size_bytes)}"
+            left = f"Model: {model}"
+
+            term_width = shutil.get_terminal_size((80, 20)).columns
+            # Compute padding; ensure at least one space between fields
+            pad = term_width - len(left) - len(right)
+            if pad > 1:
+                return left + (' ' * pad) + right
+            else:
+                # Not enough room; return compact form
+                return f"{left} | {right}"
+        except Exception:
+            return ""
 
 
 def create_input_handler(registry, models: list = None, mouse_support: Optional[bool] = None, **kwargs) -> InputHandler:
