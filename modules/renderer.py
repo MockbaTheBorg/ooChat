@@ -9,6 +9,7 @@ import threading
 import time
 import os
 import select
+import atexit
 import termios
 import tty
 from typing import Any, Callable, Dict, List, Optional, TextIO
@@ -39,6 +40,9 @@ _spinner_interrupted: threading.Event = threading.Event()
 # also checks the interrupt flag.
 _spinner_message_shown: threading.Event = threading.Event()
 _spinner_interrupt_callback: Optional[Callable[[], None]] = None
+_terminal_mode_lock = threading.Lock()
+_terminal_mode_fd: Optional[int] = None
+_terminal_mode_attrs = None
 
 
 def get_console():
@@ -85,6 +89,51 @@ def set_spinner_interrupt_callback(callback: Optional[Callable[[], None]]) -> No
     """Register a callback invoked when ESC interrupts a spinner."""
     global _spinner_interrupt_callback
     _spinner_interrupt_callback = callback
+
+
+def _enter_spinner_input_mode() -> bool:
+    """Put stdin into cbreak mode for ESC detection.
+
+    Returns True when this call changed the terminal mode.
+    """
+    global _terminal_mode_fd, _terminal_mode_attrs
+    try:
+        if not sys.stdin.isatty():
+            return False
+        fd = sys.stdin.fileno()
+    except Exception:
+        return False
+
+    with _terminal_mode_lock:
+        if _terminal_mode_fd is not None:
+            return _terminal_mode_fd == fd
+        try:
+            _terminal_mode_attrs = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+            _terminal_mode_fd = fd
+            return True
+        except Exception:
+            _terminal_mode_fd = None
+            _terminal_mode_attrs = None
+            return False
+
+
+def restore_terminal_mode() -> None:
+    """Restore stdin terminal mode if the spinner changed it."""
+    global _terminal_mode_fd, _terminal_mode_attrs
+    with _terminal_mode_lock:
+        if _terminal_mode_fd is None or _terminal_mode_attrs is None:
+            return
+        try:
+            termios.tcsetattr(_terminal_mode_fd, termios.TCSADRAIN, _terminal_mode_attrs)
+        except Exception:
+            pass
+        finally:
+            _terminal_mode_fd = None
+            _terminal_mode_attrs = None
+
+
+atexit.register(restore_terminal_mode)
 
 
 # No external output handler by default; renderers write to stdout.
@@ -361,15 +410,12 @@ class Renderer:
             pass
 
         fd = None
-        old_attrs = None
         raw_mode = False
         # Prepare cbreak input mode so we can detect single-key presses
         try:
             if sys.stdin.isatty():
                 fd = sys.stdin.fileno()
-                old_attrs = termios.tcgetattr(fd)
-                tty.setcbreak(fd)
-                raw_mode = True
+            raw_mode = _enter_spinner_input_mode()
         except Exception:
             raw_mode = False
 
@@ -444,10 +490,10 @@ class Renderer:
             except Exception:
                 pass
 
-            # Restore terminal attributes if we changed them
+            # Restore terminal attributes if we changed them.
             try:
-                if raw_mode and fd is not None and old_attrs is not None:
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+                if raw_mode:
+                    restore_terminal_mode()
             except Exception:
                 pass
 

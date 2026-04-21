@@ -888,6 +888,11 @@ class ChatApp:
 
     def _save_and_exit(self) -> None:
         """Save session and exit."""
+        try:
+            from modules import renderer as renderer_module
+            renderer_module.restore_terminal_mode()
+        except Exception:
+            pass
         if self.session:
             self.session.save()
             if self.session.lock:
