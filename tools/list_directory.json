@@ -14,5 +14,5 @@
     },
     "required": ["path"]
   },
-  "command": "ls -la {path}"
+  "argv": ["python3", "-u", "tools/list_directory.py"]
 }

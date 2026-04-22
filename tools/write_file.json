@@ -18,6 +18,6 @@
     },
     "required": ["path", "content"]
   },
-  "argv": ["python3", "-c", "import json,sys,os; args=json.load(sys.stdin); os.makedirs(os.path.dirname(args['path']), exist_ok=True); open(args['path'],'w').write(args['content']); print('OK')"],
+  "argv": ["python3", "-u", "tools/write_file.py"],
   "timeout": 30
 }

@@ -14,6 +14,6 @@
     },
     "required": ["path"]
   },
-  "argv": ["python3", "-c", "import json,sys; args=json.load(sys.stdin); print(open(args['path']).read())"],
+  "argv": ["python3", "-u", "tools/read_file.py"],
   "timeout": 30
 }
