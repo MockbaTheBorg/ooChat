@@ -386,14 +386,7 @@ class ChatApp:
             # Clear any prior spinner interrupt state before starting
             try:
                 from modules import renderer as renderer_module
-                try:
-                    renderer_module.clear_spinner_interrupt()
-                except Exception:
-                    pass
-                try:
-                    renderer_module.clear_spinner_message_shown()
-                except Exception:
-                    pass
+                renderer_module.clear_spinner_interrupt()
             except Exception:
                 pass
 
@@ -412,36 +405,13 @@ class ChatApp:
             # If the user interrupted the spinner (ESC), abort the request
             try:
                 from modules import renderer as renderer_module
-                interrupted = False
-                try:
-                    interrupted = bool(renderer_module.spinner_was_interrupted())
-                except Exception:
-                    interrupted = False
-                if interrupted:
-                    # Ensure spinner is stopped
-                    try:
-                        self.renderer._stop_spinner()
-                    except Exception:
-                        pass
-                    # If spinner thread did not already print the message,
-                    # print it here from the main thread so the user sees it.
-                    try:
-                        renderer_module.show_spinner_interrupt_message()
-                    except Exception:
-                        pass
-                    # Remove the last user message to mirror API error behavior
+                if renderer_module.spinner_was_interrupted():
+                    self.renderer._stop_spinner()
+                    renderer_module.print_interrupt_message()
                     try:
                         inter = self.context._current_interaction()
                         if inter and inter.messages and inter.messages[-1].role == 'user':
                             inter.messages.pop()
-                    except Exception:
-                        pass
-                    try:
-                        renderer_module.clear_spinner_interrupt()
-                    except Exception:
-                        pass
-                    try:
-                        renderer_module.clear_spinner_message_shown()
                     except Exception:
                         pass
                     return

@@ -12,6 +12,7 @@ import select
 import atexit
 import termios
 import tty
+
 from typing import Any, Callable, Dict, List, Optional, TextIO
 
 from . import globals as globals_module
@@ -24,7 +25,7 @@ try:
     from rich.panel import Panel
     from rich.text import Text
     RICH_AVAILABLE = True
-except ImportError:
+except Exception:
     RICH_AVAILABLE = False
 
 # Console instance for rich output
@@ -35,16 +36,10 @@ SPINNER_SEQUENCE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # Event set when the user interrupts a spinning operation (ESC pressed)
 _spinner_interrupted: threading.Event = threading.Event()
-# Indicates whether the "process interrupted" message was already printed
-# by the spinner thread to avoid duplicate messages when the main loop
-# also checks the interrupt flag.
-_spinner_message_shown: threading.Event = threading.Event()
 _spinner_interrupt_callback: Optional[Callable[[], None]] = None
-_spinner_message_lock = threading.Lock()
 _terminal_mode_lock = threading.Lock()
 _terminal_mode_fd: Optional[int] = None
 _terminal_mode_attrs = None
-
 
 def get_console():
     """Get or create rich console instance."""
@@ -62,26 +57,10 @@ def clear_spinner_interrupt() -> None:
         pass
 
 
-def clear_spinner_message_shown() -> None:
-    """Clear the module-level spinner message shown flag."""
-    try:
-        _spinner_message_shown.clear()
-    except Exception:
-        pass
-
-
 def spinner_was_interrupted() -> bool:
     """Return True if a spinner interrupt (ESC) was detected."""
     try:
         return _spinner_interrupted.is_set()
-    except Exception:
-        return False
-
-
-def spinner_message_was_shown() -> bool:
-    """Return True if the spinner thread already printed the interrupt message."""
-    try:
-        return _spinner_message_shown.is_set()
     except Exception:
         return False
 
@@ -134,48 +113,29 @@ def restore_terminal_mode() -> None:
             _terminal_mode_attrs = None
 
 
-def show_spinner_interrupt_message() -> bool:
-    """Print the interrupt message once from the left edge.
+def print_interrupt_message() -> None:
+    """Print the 'Process interrupted!' message to stdout.
 
-    Returns True when this call emitted the message.
+    Called exclusively from the main thread after a spinner interrupt
+    is detected, so no locking or safe-runner is needed.
     """
-    with _spinner_message_lock:
+    try:
+        sys.stdout.write("\r\033[2K")
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        if RICH_AVAILABLE:
+            get_console().print("[red]Process interrupted![/red]")
+        else:
+            sys.stdout.write("\033[31mProcess interrupted!\033[0m\n")
+            sys.stdout.flush()
+    except Exception:
         try:
-            if _spinner_message_shown.is_set():
-                return False
-        except Exception:
-            pass
-
-        try:
-            sys.stdout.write("\r\033[2K")
+            sys.stdout.write("\033[31mProcess interrupted!\033[0m\n")
             sys.stdout.flush()
         except Exception:
             pass
-
-        try:
-            if RICH_AVAILABLE:
-                console = get_console()
-                console.print("[red]Process interrupted![/red]")
-            else:
-                sys.stdout.write("\033[31mProcess interrupted!\033[0m\n")
-                sys.stdout.flush()
-        except Exception:
-            try:
-                sys.stdout.write("\033[31mProcess interrupted!\033[0m\n")
-                sys.stdout.flush()
-            except Exception:
-                return False
-
-        try:
-            _spinner_message_shown.set()
-        except Exception:
-            pass
-        return True
-
-
-def _print_spinner_interrupt_message() -> None:
-    """Backward-compatible wrapper for tests and internal callers."""
-    show_spinner_interrupt_message()
 
 
 atexit.register(restore_terminal_mode)
@@ -297,10 +257,6 @@ class Renderer:
             # Clear any prior interrupt state and start spinner
             try:
                 clear_spinner_interrupt()
-            except Exception:
-                pass
-            try:
-                clear_spinner_message_shown()
             except Exception:
                 pass
             self._start_spinner()
@@ -489,6 +445,7 @@ class Renderer:
                             if b:
                                 # Detect ESC (single-byte 0x1b)
                                 if (isinstance(b, bytes) and b == b"\x1b") or (isinstance(b, str) and b == "\x1b"):
+                                    # Signal only — printing is done by the main thread
                                     try:
                                         _spinner_interrupted.set()
                                     except Exception:
@@ -498,14 +455,6 @@ class Renderer:
                                             _spinner_interrupt_callback()
                                     except Exception:
                                         pass
-                                    # Print interrupt message from spinner thread
-                                    try:
-                                        show_spinner_interrupt_message()
-                                    except Exception:
-                                        try:
-                                            show_spinner_interrupt_message()
-                                        except Exception:
-                                            pass
                                     try:
                                         stop_event.set()
                                     except Exception:
@@ -517,12 +466,20 @@ class Renderer:
                 else:
                     stop_event.wait(0.12)
         finally:
-            # Clear the spinner line
+            # Clear the spinner line only when we were not interrupted.
+            # On interrupt the main thread has already printed the interrupt
+            # message; clearing here would erase it and blank the prompt line.
+            interrupted = False
             try:
-                sys.stdout.write("\r" + " " * 4 + "\r")
-                sys.stdout.flush()
+                interrupted = _spinner_interrupted.is_set()
             except Exception:
                 pass
+            if not interrupted:
+                try:
+                    sys.stdout.write("\r" + " " * 4 + "\r")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
 
             # Restore terminal attributes if we changed them.
             try:

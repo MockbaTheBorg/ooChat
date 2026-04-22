@@ -10,7 +10,7 @@ import os
 import json
 import re
 import shutil
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
