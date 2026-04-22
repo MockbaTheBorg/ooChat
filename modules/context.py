@@ -229,6 +229,16 @@ class Context:
 
         return out
 
+    def discard_current_interaction(self) -> None:
+        """Remove the last interaction entirely.
+
+        Safe to call when a request is cancelled before any assistant
+        message has been committed, so only the user message exists.
+        """
+        if self.interactions:
+            self.interactions.pop()
+            self.next_id -= 1
+
     def get_message_count(self) -> int:
         """Return total number of messages across interactions."""
         return sum(len(i.messages) for i in self.interactions)

@@ -408,12 +408,7 @@ class ChatApp:
                 if renderer_module.spinner_was_interrupted():
                     self.renderer._stop_spinner()
                     renderer_module.print_interrupt_message()
-                    try:
-                        inter = self.context._current_interaction()
-                        if inter and inter.messages and inter.messages[-1].role == 'user':
-                            inter.messages.pop()
-                    except Exception:
-                        pass
+                    self.context.discard_current_interaction()
                     return
             except Exception:
                 pass
@@ -449,13 +444,7 @@ class ChatApp:
 
         except APIError as e:
             print(f"\nAPI error: {e}")
-            # Remove failed user message: drop last message of current interaction
-            try:
-                inter = self.context._current_interaction()
-                if inter and inter.messages and inter.messages[-1].role == 'user':
-                    inter.messages.pop()
-            except Exception:
-                pass
+            self.context.discard_current_interaction()
 
     def _tui_on_submit(self, text: str, ui=None) -> None:
         """Callback used by ChatUI when user submits text.
@@ -545,12 +534,7 @@ class ChatApp:
                 ui.append_assistant(f"API error: {e}")
             else:
                 print(f"\nAPI error: {e}")
-            try:
-                inter = self.context._current_interaction()
-                if inter and inter.messages and inter.messages[-1].role == 'user':
-                    inter.messages.pop()
-            except Exception:
-                pass
+            self.context.discard_current_interaction()
 
     def _handle_tool_calls(self, tool_calls: List[Dict],
                            assistant_content: str = "",
@@ -739,6 +723,16 @@ class ChatApp:
 
                     if chunk.get("tool_calls"):
                         next_tool_calls.extend(chunk["tool_calls"])
+
+                # Check for ESC interrupt on this follow-up request
+                try:
+                    from modules import renderer as renderer_module
+                    if renderer_module.spinner_was_interrupted():
+                        self.renderer._stop_spinner()
+                        renderer_module.print_interrupt_message()
+                        return
+                except Exception:
+                    pass
 
                 display_text, context_text, thinking_blocks = process_assistant_response(response_text, include_blocks=True)
 
