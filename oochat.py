@@ -426,20 +426,7 @@ class ChatApp:
                     # If spinner thread did not already print the message,
                     # print it here from the main thread so the user sees it.
                     try:
-                        if not renderer_module.spinner_message_was_shown():
-                            try:
-                                if renderer_module.RICH_AVAILABLE:
-                                    console = renderer_module.get_console()
-                                    console.print("[red]process interrupted[/red]")
-                                else:
-                                    sys.stdout.write("\033[31mprocess interrupted\033[0m\n")
-                                    sys.stdout.flush()
-                            except Exception:
-                                try:
-                                    sys.stdout.write("\033[31mprocess interrupted\033[0m\n")
-                                    sys.stdout.flush()
-                                except Exception:
-                                    pass
+                        renderer_module.show_spinner_interrupt_message()
                     except Exception:
                         pass
                     # Remove the last user message to mirror API error behavior

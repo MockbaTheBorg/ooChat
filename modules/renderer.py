@@ -40,6 +40,7 @@ _spinner_interrupted: threading.Event = threading.Event()
 # also checks the interrupt flag.
 _spinner_message_shown: threading.Event = threading.Event()
 _spinner_interrupt_callback: Optional[Callable[[], None]] = None
+_spinner_message_lock = threading.Lock()
 _terminal_mode_lock = threading.Lock()
 _terminal_mode_fd: Optional[int] = None
 _terminal_mode_attrs = None
@@ -131,6 +132,50 @@ def restore_terminal_mode() -> None:
         finally:
             _terminal_mode_fd = None
             _terminal_mode_attrs = None
+
+
+def show_spinner_interrupt_message() -> bool:
+    """Print the interrupt message once from the left edge.
+
+    Returns True when this call emitted the message.
+    """
+    with _spinner_message_lock:
+        try:
+            if _spinner_message_shown.is_set():
+                return False
+        except Exception:
+            pass
+
+        try:
+            sys.stdout.write("\r\033[2K")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+        try:
+            if RICH_AVAILABLE:
+                console = get_console()
+                console.print("[red]Process interrupted![/red]")
+            else:
+                sys.stdout.write("\033[31mProcess interrupted!\033[0m\n")
+                sys.stdout.flush()
+        except Exception:
+            try:
+                sys.stdout.write("\033[31mProcess interrupted!\033[0m\n")
+                sys.stdout.flush()
+            except Exception:
+                return False
+
+        try:
+            _spinner_message_shown.set()
+        except Exception:
+            pass
+        return True
+
+
+def _print_spinner_interrupt_message() -> None:
+    """Backward-compatible wrapper for tests and internal callers."""
+    show_spinner_interrupt_message()
 
 
 atexit.register(restore_terminal_mode)
@@ -455,21 +500,10 @@ class Renderer:
                                         pass
                                     # Print interrupt message from spinner thread
                                     try:
-                                        if RICH_AVAILABLE:
-                                            console = get_console()
-                                            # Use a plain print via console to keep coloring
-                                            console.print("[red]process interrupted[/red]")
-                                        else:
-                                            sys.stdout.write("\033[31mprocess interrupted\033[0m\n")
-                                            sys.stdout.flush()
-                                        try:
-                                            _spinner_message_shown.set()
-                                        except Exception:
-                                            pass
+                                        show_spinner_interrupt_message()
                                     except Exception:
                                         try:
-                                            sys.stdout.write("\033[31mprocess interrupted\033[0m\n")
-                                            sys.stdout.flush()
+                                            show_spinner_interrupt_message()
                                         except Exception:
                                             pass
                                     try:
@@ -519,6 +553,10 @@ class Renderer:
                 self._spinner_thread.join(timeout=0.5)
             except Exception:
                 pass
+        try:
+            restore_terminal_mode()
+        except Exception:
+            pass
         self._spinner_thread = None
         self._spinner_stop = None
 
