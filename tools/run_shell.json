@@ -1,6 +1,6 @@
 {
   "name": "run_shell",
-  "description": "Execute a shell command and return the output",
+  "description": "Execute a shell command and return the output. This is a general-purpose FALLBACK tool for tasks that cannot be accomplished with more specific tools like read_file, write_file, or list_directory. Do NOT use this tool for reading files (use read_file), writing files (use write_file), or listing directories (use list_directory) - those tools are safer, faster, and more reliable. Reserve this tool for operations that genuinely require a shell, such as: running programs, installing packages, managing processes, searching file contents with grep, chaining commands with pipes, checking system info, git operations, file manipulation (moving, copying, deleting), and any other task that has no dedicated tool.",
   "read_only": false,
   "destructive": true,
   "kind": "remote",
@@ -9,7 +9,7 @@
     "properties": {
       "command": {
         "type": "string",
-        "description": "Shell command to execute"
+        "description": "The shell command to execute. Only use this for tasks that cannot be done with read_file, write_file, or list_directory."
       }
     },
     "required": ["command"]

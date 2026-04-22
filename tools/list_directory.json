@@ -1,6 +1,6 @@
 {
   "name": "list_directory",
-  "description": "List files and directories in a path",
+  "description": "List files and directories in a path. This is the PRIMARY and RECOMMENDED method for exploring directory contents - always use this instead of 'run_shell' with 'ls', 'find', or similar commands when you need to see what files and folders exist. This tool is purpose-built for safe, efficient directory listing without invoking a shell. Always prefer this tool over shell-based alternatives.",
   "read_only": true,
   "destructive": false,
   "kind": "remote",
@@ -9,7 +9,7 @@
     "properties": {
       "path": {
         "type": "string",
-        "description": "Directory path to list"
+        "description": "The directory path to list. Use this to discover what files and subdirectories exist at a given location."
       }
     },
     "required": ["path"]
