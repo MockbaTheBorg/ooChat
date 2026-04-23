@@ -296,6 +296,7 @@ class Context:
     def clear(self) -> None:
         """Clear all interactions but keep system prompt."""
         self.interactions = []
+        self.next_id = 1
 
 
 def compact_context(context: Context, model: str, keep_last: int = 3,
