@@ -37,6 +37,7 @@ def register(chat):
         return {
             "display": f"Session context reset. Messages: {old_count} → {chat.context.get_message_count()}\n",
             "context": None,
+            "redraw": True,
         }
 
     chat.add_command(
