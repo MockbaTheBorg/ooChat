@@ -13,3 +13,6 @@ tiktoken>=0.4.0
 
 # HTML parsing
 beautifulsoup4
+
+# QR code generation for ascii_qr tool
+qrcode>=7.0
