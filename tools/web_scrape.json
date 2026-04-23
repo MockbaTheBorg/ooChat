@@ -1,0 +1,30 @@
+{
+  "name": "web_scrape",
+  "description": "Fetch the content of a web page and return its textual content. Follows redirects automatically and returns error messages for failures (e.g., 404, connection errors).",
+  "read_only": true,
+  "destructive": false,
+  "kind": "remote",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "The URL of the web page to scrape"
+      },
+      "max_length": {
+        "type": "integer",
+        "description": "Maximum number of characters to return in the content. If the page is longer, it will be truncated. Defaults to 32768.",
+        "default": 32768
+      }
+      ,
+      "source": {
+        "type": "boolean",
+        "description": "If true, return the raw HTML source of the page instead of extracted text.",
+        "default": false
+      }
+    },
+    "required": ["url"]
+  },
+  "argv": ["python3", "-u", "tools/web_scrape.py"],
+  "timeout": 30
+}

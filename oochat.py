@@ -559,205 +559,227 @@ class ChatApp:
         turn_session_messages = []
         pending_tool_calls = tool_calls
         pending_assistant_content = assistant_content
-        while pending_tool_calls:
-            pending_tool_calls = [canonicalize_tool_call(self.tools, call) for call in pending_tool_calls]
-            # Re-evaluate current interaction kind each loop in case it changed
-            current_inter = self.context._current_interaction()
-            interaction_is_local = (current_inter is not None and current_inter.kind == "local")
+        # Track whether the user chose "yes for all" for this interaction.
+        # This flag is scoped to the lifetime of this _handle_tool_calls
+        # invocation so subsequent tool calls in the same interaction
+        # are auto-approved when set.
+        self._interaction_auto_approve = False
+        try:
+            while pending_tool_calls:
+                pending_tool_calls = [canonicalize_tool_call(self.tools, call) for call in pending_tool_calls]
 
-            batch_requires_followup = False
-            for call in pending_tool_calls:
-                tool_name = call.get("function", {}).get("name")
-                tool = self.tools.get(tool_name)
-                if tool is None:
-                    batch_requires_followup = True
-                    break
-                tool_handling = resolve_tool_result_handling(tool)
-                effective_handling = "local" if (interaction_is_local or tool_handling == "local") else "model"
-                if effective_handling == "model":
-                    batch_requires_followup = True
-                    break
+                # Re-evaluate current interaction kind each loop in case it changed
+                current_inter = self.context._current_interaction()
+                interaction_is_local = (current_inter is not None and current_inter.kind == "local")
 
-            assistant_tool_call_message = {
-                "role": "assistant",
-                "content": pending_assistant_content or "",
-                "tool_calls": pending_tool_calls,
-            }
-            turn_followup_messages.append(assistant_tool_call_message)
-            if batch_requires_followup:
-                turn_session_messages.append(assistant_tool_call_message)
+                batch_requires_followup = False
+                for call in pending_tool_calls:
+                    tool_name = call.get("function", {}).get("name")
+                    tool = self.tools.get(tool_name)
+                    if tool is None:
+                        batch_requires_followup = True
+                        break
+                    tool_handling = resolve_tool_result_handling(tool)
+                    effective_handling = "local" if (interaction_is_local or tool_handling == "local") else "model"
+                    if effective_handling == "model":
+                        batch_requires_followup = True
+                        break
 
-            local_statuses = []
+                assistant_tool_call_message = {
+                    "role": "assistant",
+                    "content": pending_assistant_content or "",
+                    "tool_calls": pending_tool_calls,
+                }
+                turn_followup_messages.append(assistant_tool_call_message)
+                if batch_requires_followup:
+                    turn_session_messages.append(assistant_tool_call_message)
 
-            for call in pending_tool_calls:
-                tool_name = call.get("function", {}).get("name")
-                tool_args_str = call.get("function", {}).get("arguments", "{}")
-                call_id = call.get("id", "unknown")
+                local_statuses = []
 
-                try:
-                    tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
-                except json.JSONDecodeError:
-                    tool_args = {}
+                for call in pending_tool_calls:
+                    tool_name = call.get("function", {}).get("name")
+                    tool_args_str = call.get("function", {}).get("arguments", "{}")
+                    call_id = call.get("id", "unknown")
 
-                tool = self.tools.get(tool_name)
-                if not tool:
-                    self._commit_turn_session_messages(turn_session_messages)
-                    self._report_tool_failure(
-                        tool_name,
-                        f"Unknown tool: {tool_name}",
-                    )
-                    return
+                    try:
+                        tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
+                    except json.JSONDecodeError:
+                        tool_args = {}
 
-                allowed, reason = self.tools.is_allowed(tool_name)
-                if not allowed:
-                    self._commit_turn_session_messages(turn_session_messages)
-                    self._report_tool_failure(
-                        tool_name,
-                        f"Tool blocked by guardrails: {reason}",
-                    )
-                    return
-
-                if reason == "NEEDS_CONFIRMATION":
-                    confirm = input(f"\nTool '{tool_name}' may modify state. Proceed? [y/N]: ").strip().lower()
-                    if confirm != 'y':
+                    tool = self.tools.get(tool_name)
+                    if not tool:
                         self._commit_turn_session_messages(turn_session_messages)
-                        self._report_tool_failure(tool_name, "Tool execution cancelled by user.")
+                        self._report_tool_failure(
+                            tool_name,
+                            f"Unknown tool: {tool_name}",
+                        )
                         return
 
-                print(f"\nExecuting: {tool_name}({tool_args})")
-                result = execute_tool(tool, tool_args)
+                    allowed, reason = self.tools.is_allowed(tool_name)
+                    if not allowed:
+                        self._commit_turn_session_messages(turn_session_messages)
+                        self._report_tool_failure(
+                            tool_name,
+                            f"Tool blocked by guardrails: {reason}",
+                        )
+                        return
 
-                if result.get("error"):
+                    # If the tool requires confirmation and the user has not
+                    # already selected "yes for all", show a preview of the
+                    # planned call and ask for confirmation.
+                    if reason == "NEEDS_CONFIRMATION" and not getattr(self, '_interaction_auto_approve', False):
+                        try:
+                            preview = json.dumps(tool_args, ensure_ascii=False, indent=2)
+                        except Exception:
+                            preview = str(tool_args)
+                        print(f"\nPlanned execution: {tool_name}({preview})")
+                        confirm = input(f"\nTool '{tool_name}' may modify state. Proceed? [y/a/N]: ").strip().lower()
+                        if confirm == 'a':
+                            self._interaction_auto_approve = True
+                        if confirm not in ('y', 'a'):
+                            self._commit_turn_session_messages(turn_session_messages)
+                            self._report_tool_failure(tool_name, "Tool execution cancelled by user.")
+                            return
+
+                    print(f"\nExecuting: {tool_name}({tool_args})")
+                    result = execute_tool(tool, tool_args)
+
+                    if result.get("error"):
+                        self._commit_turn_session_messages(turn_session_messages)
+                        self._report_tool_failure(
+                            tool_name,
+                            f"Tool execution failed with {result['error']}.",
+                            result.get("output", ""),
+                        )
+                        return
+
+                    result_output = result.get("output", "")
+
+                    # Determine per-call effective handling (local if either side is local)
+                    tool_handling = resolve_tool_result_handling(tool)
+                    effective_local = (interaction_is_local or tool_handling == "local")
+
+                    # Display raw output immediately only for local tool results.
+                    # Remote tools should flow back through the model follow-up
+                    # request rather than being rendered twice.
+                    if result_output and effective_local:
+                        try:
+                            # Local: render dim markdown when possible
+                            fenced_output = f"```text\n{result_output.rstrip()}\n```"
+                            try:
+                                # Use renderer internals for rich rendering when available
+                                from modules import renderer as renderer_module
+                                if renderer_module.RICH_AVAILABLE:
+                                    console = renderer_module.get_console()
+                                    md = renderer_module.Markdown(fenced_output)
+                                    console.print()
+                                    console.print(md, style="dim")
+                                else:
+                                    renderer_module.render_markdown(fenced_output)
+                            except Exception:
+                                try:
+                                    from modules import renderer as renderer_module
+                                    renderer_module.render_markdown(fenced_output)
+                                except Exception:
+                                    print(f"\n{result_output}\n")
+                        except Exception:
+                            print(f"\n{result_output}\n")
+                        # Mark that we just printed a local tool output so the
+                        # prompt printer can decide whether to emit an HR before
+                        # the upcoming header when no assistant output follows.
+                        try:
+                            if getattr(self, 'renderer', None):
+                                setattr(self.renderer, '_last_role', 'tool')
+                                setattr(self.renderer, '_last_printed_separator', False)
+                        except Exception:
+                            pass
+
+                    if not batch_requires_followup:
+                        local_statuses.append(build_tool_status_message(tool_name, result))
+
+                    followup_message = build_tool_followup_message(tool_name, tool, result, force_local=effective_local)
+                    if followup_message is not None:
+                        turn_followup_messages.append({
+                            "role": "tool",
+                            "content": followup_message,
+                            "tool_call_id": call_id,
+                        })
+
+                    session_message = build_tool_session_message(tool_name, tool, result, force_local=effective_local)
+                    if session_message is not None:
+                        turn_session_messages.append({
+                            "role": "tool",
+                            "content": session_message,
+                            "tool_call_id": call_id,
+                        })
+
+                if not batch_requires_followup:
                     self._commit_turn_session_messages(turn_session_messages)
-                    self._report_tool_failure(
-                        tool_name,
-                        f"Tool execution failed with {result['error']}.",
-                        result.get("output", ""),
-                    )
+                    self._render_local_tool_statuses(local_statuses)
+                    if self.session:
+                        self.session.save()
                     return
 
-                result_output = result.get("output", "")
+                response_text = ""
+                next_tool_calls = []
 
-                # Determine per-call effective handling (local if either side is local)
-                tool_handling = resolve_tool_result_handling(tool)
-                effective_local = (interaction_is_local or tool_handling == "local")
+                try:
+                    self.renderer.start_response()
 
-                # Display raw output immediately only for local tool results.
-                # Remote tools should flow back through the model follow-up
-                # request rather than being rendered twice.
-                if result_output and effective_local:
+                    for chunk in send_chat(
+                        model,
+                        base_messages + turn_followup_messages,
+                        stream=True,
+                        tools=tools,
+                        max_tokens=max_tokens,
+                    ):
+                        content = chunk.get("content", "")
+                        if content:
+                            self.renderer.stream_chunk(content)
+                            response_text += content
+
+                        if chunk.get("tool_calls"):
+                            next_tool_calls.extend(chunk["tool_calls"])
+
+                    # Check for ESC interrupt on this follow-up request
                     try:
-                        # Local: render dim markdown when possible
-                        fenced_output = f"```text\n{result_output.rstrip()}\n```"
-                        try:
-                            # Use renderer internals for rich rendering when available
-                            from modules import renderer as renderer_module
-                            if renderer_module.RICH_AVAILABLE:
-                                console = renderer_module.get_console()
-                                md = renderer_module.Markdown(fenced_output)
-                                console.print()
-                                console.print(md, style="dim")
-                            else:
-                                renderer_module.render_markdown(fenced_output)
-                        except Exception:
-                            try:
-                                from modules import renderer as renderer_module
-                                renderer_module.render_markdown(fenced_output)
-                            except Exception:
-                                print(f"\n{result_output}\n")
-                    except Exception:
-                        print(f"\n{result_output}\n")
-                    # Mark that we just printed a local tool output so the
-                    # prompt printer can decide whether to emit an HR before
-                    # the upcoming header when no assistant output follows.
-                    try:
-                        if getattr(self, 'renderer', None):
-                            setattr(self.renderer, '_last_role', 'tool')
-                            setattr(self.renderer, '_last_printed_separator', False)
+                        from modules import renderer as renderer_module
+                        if renderer_module.spinner_was_interrupted():
+                            self.renderer._stop_spinner()
+                            renderer_module.print_interrupt_message()
+                            return
                     except Exception:
                         pass
 
-                if not batch_requires_followup:
-                    local_statuses.append(build_tool_status_message(tool_name, result))
+                    display_text, context_text, thinking_blocks = process_assistant_response(response_text, include_blocks=True)
 
-                followup_message = build_tool_followup_message(tool_name, tool, result, force_local=effective_local)
-                if followup_message is not None:
-                    turn_followup_messages.append({
-                        "role": "tool",
-                        "content": followup_message,
-                        "tool_call_id": call_id,
-                    })
+                    if next_tool_calls:
+                        self.renderer.end_response(display_text)
+                        pending_tool_calls = next_tool_calls
+                        pending_assistant_content = context_text
+                        continue
 
-                session_message = build_tool_session_message(tool_name, tool, result, force_local=effective_local)
-                if session_message is not None:
                     turn_session_messages.append({
-                        "role": "tool",
-                        "content": session_message,
-                        "tool_call_id": call_id,
+                        "role": "assistant",
+                        "content": context_text,
                     })
+                    self._commit_turn_session_messages(turn_session_messages)
+                    self.renderer.end_response(display_text, self.context.get_flattened_messages(), session_id=self.session.session_id if self.session else None)
 
-            if not batch_requires_followup:
-                self._commit_turn_session_messages(turn_session_messages)
-                self._render_local_tool_statuses(local_statuses)
-                if self.session:
+                    post_text = self.registry.apply_post_filters(context_text)
+                    _ = self.filters.apply_post_receive(post_text)
+
                     self.session.save()
-                return
+                    return
 
-            response_text = ""
-            next_tool_calls = []
-
+                except APIError as e:
+                    print(f"\nAPI error: {e}")
+                    return
+        finally:
             try:
-                self.renderer.start_response()
-
-                for chunk in send_chat(
-                    model,
-                    base_messages + turn_followup_messages,
-                    stream=True,
-                    tools=tools,
-                    max_tokens=max_tokens,
-                ):
-                    content = chunk.get("content", "")
-                    if content:
-                        self.renderer.stream_chunk(content)
-                        response_text += content
-
-                    if chunk.get("tool_calls"):
-                        next_tool_calls.extend(chunk["tool_calls"])
-
-                # Check for ESC interrupt on this follow-up request
-                try:
-                    from modules import renderer as renderer_module
-                    if renderer_module.spinner_was_interrupted():
-                        self.renderer._stop_spinner()
-                        renderer_module.print_interrupt_message()
-                        return
-                except Exception:
-                    pass
-
-                display_text, context_text, thinking_blocks = process_assistant_response(response_text, include_blocks=True)
-
-                if next_tool_calls:
-                    self.renderer.end_response(display_text)
-                    pending_tool_calls = next_tool_calls
-                    pending_assistant_content = context_text
-                    continue
-
-                turn_session_messages.append({
-                    "role": "assistant",
-                    "content": context_text,
-                })
-                self._commit_turn_session_messages(turn_session_messages)
-                self.renderer.end_response(display_text, self.context.get_flattened_messages(), session_id=self.session.session_id if self.session else None)
-
-                post_text = self.registry.apply_post_filters(context_text)
-                _ = self.filters.apply_post_receive(post_text)
-
-                self.session.save()
-                return
-
-            except APIError as e:
-                print(f"\nAPI error: {e}")
-                return
+                delattr(self, '_interaction_auto_approve')
+            except Exception:
+                pass
 
     def _commit_turn_session_messages(self, messages: List[Dict]) -> None:
         """Persist deferred tool-turn messages into the session context."""
@@ -822,10 +844,21 @@ class ChatApp:
         if not allowed:
             return {"output": "", "error": f"Tool blocked by guardrails: {reason}"}
 
-        # If the tool requires confirmation, prompt the user
-        if reason == "NEEDS_CONFIRMATION":
-            confirm = input(f"\nTool '{tool_name}' may modify state. Proceed? [y/N]: ").strip().lower()
-            if confirm != 'y':
+        # If the tool requires confirmation, prompt the user. If the
+        # interaction-level auto-approve flag is set, skip prompting.
+        if reason == "NEEDS_CONFIRMATION" and not getattr(self, '_interaction_auto_approve', False):
+            try:
+                preview = json.dumps(args, ensure_ascii=False, indent=2)
+            except Exception:
+                preview = str(args)
+            print(f"\nPlanned execution: {tool_name}({preview})")
+            confirm = input(f"\nTool '{tool_name}' may modify state. Proceed? [y/a/N]: ").strip().lower()
+            if confirm == 'a':
+                try:
+                    self._interaction_auto_approve = True
+                except Exception:
+                    pass
+            if confirm not in ('y', 'a'):
                 return {"output": "", "error": "User cancelled"}
 
         try:

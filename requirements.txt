@@ -10,3 +10,6 @@ prompt_toolkit>=3.0.0
 # Markdown rendering and styled terminal output
 rich>=13.0.0
 tiktoken>=0.4.0
+
+# HTML parsing
+beautifulsoup4

@@ -1,0 +1,24 @@
+{
+  "name": "web_search",
+  "description": "Search the web using ddgr and return JSON results.",
+  "read_only": true,
+  "destructive": false,
+  "kind": "remote",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "The search query to run"
+      },
+      "n": {
+        "type": "integer",
+        "description": "Number of results to return",
+        "default": 10
+      }
+    },
+    "required": ["query"]
+  },
+  "argv": ["python3", "-u", "tools/web_search.py"],
+  "timeout": 30
+}
