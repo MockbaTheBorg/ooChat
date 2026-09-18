@@ -108,6 +108,8 @@ Input is handled by `prompt_toolkit` with:
 
 Turn processing (the model call plus any tool calls it triggers, including `spawn_agent`) runs on a background thread so submitting a message returns control to the prompt immediately instead of blocking until the turn finishes; only one turn runs at a time (a second message while one is active is rejected with a message, not queued). The middle toolbar segment and the running-job count come from `modules/jobs.py:JobRegistry`, which composes `AgentPool`'s sub-agent runs with (future) Gauntlet Loop rounds into one view — see `/agents` for the full run list.
 
+A sub-agent also prints a one-line live notice the moment it finishes — `[agent <id> done: <summary>]` — rather than waiting for its parent turn to get around to it; `<id>` is the same id `/agents kill <id>` accepts. `patch_stdout` (above) keeps this from corrupting a live input line.
+
 ## Configuration
 
 Config loading order is:

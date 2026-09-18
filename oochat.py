@@ -129,9 +129,11 @@ class ChatApp:
         # pool of headless sub-agents (see modules/agents.py). Registered
         # after load_all_tools so it isn't shadowed by a JSON tool file
         # reusing the same name. on_finish persists each run's transcript
-        # for audit/debugging (see _persist_agent_run); it must not print
-        # or touch the renderer since it runs on the sub-agent's thread.
-        self.agent_pool = AgentPool(tools=self.tools, on_finish=self._persist_agent_run)
+        # (see _persist_agent_run) and prints a live completion notice (see
+        # _notify_agent_finished) -- safe to do from the sub-agent's own
+        # worker thread since get_input() wraps session.prompt() in
+        # patch_stdout() (T16), so this can't corrupt a live input line.
+        self.agent_pool = AgentPool(tools=self.tools, on_finish=self._on_agent_finish)
         spawn_tool_def, spawn_agent_fn = build_spawn_agent_tool(self.agent_pool)
         self.tools.register_native(spawn_tool_def, spawn_agent_fn)
 
@@ -790,19 +792,14 @@ class ChatApp:
                         exec_args["_precomputed_future"] = precomputed_future
                     result = execute_tool(tool, exec_args)
 
-                    # One-line completion status for sub-agents instead of
-                    # streaming their output to the main terminal — the
-                    # parent model sees the full result via the follow-up
-                    # request; this is just a live progress signal, printed
-                    # here on the main thread (never from the sub-agent's
-                    # own worker thread).
-                    if tool_name == SPAWN_AGENT_TOOL_NAME:
-                        summary = (result.get("output") or result.get("error") or "").strip()
-                        summary = summary.splitlines()[0] if summary else ""
-                        if len(summary) > 120:
-                            summary = summary[:120] + "..."
-                        status = "error" if result.get("error") else "done"
-                        print(f"[agent {call_id}] {status}: {summary}")
+                    # A sub-agent's completion is now announced live by
+                    # AgentPool's on_finish callback (_notify_agent_finished,
+                    # via the real AgentPool run id) the moment it actually
+                    # finishes, rather than here once this sequential loop
+                    # happens to reach it — earlier for anything but the
+                    # first call in a concurrent batch, and using the id
+                    # `/agents kill <id>` actually accepts instead of the
+                    # model's opaque tool_call_id.
 
                     if result.get("error"):
                         self._commit_turn_session_messages(turn_session_messages)
@@ -966,16 +963,45 @@ class ChatApp:
             except Exception:
                 pass
 
+    def _on_agent_finish(self, run: Dict) -> None:
+        """Combined `AgentPool(on_finish=...)` callback: persist the run's
+        transcript, then print its live completion notice. Runs on the
+        sub-agent's own worker thread for the entire duration of both."""
+        self._persist_agent_run(run)
+        self._notify_agent_finished(run)
+
+    def _notify_agent_finished(self, run: Dict) -> None:
+        """Print a one-line notice the moment a sub-agent finishes.
+
+        Called from the sub-agent's own worker thread via `_on_agent_finish`
+        — safe because `get_input()` wraps `session.prompt()` in
+        `patch_stdout()` (T16), so a background print can't corrupt a live
+        input line. Uses `run['id']`, the real `AgentPool` run id that
+        `/agents kill <id>` accepts (not the model's opaque tool_call_id).
+        Fires as soon as the run actually finishes, which for a concurrent
+        batch of sub-agents may be well before this turn's own sequential
+        tool-call loop gets around to that particular call.
+        """
+        try:
+            result = run.get("result") or {}
+            summary = (result.get("output") or result.get("error") or "").strip()
+            summary = summary.splitlines()[0] if summary else ""
+            if len(summary) > 100:
+                summary = summary[:100] + "..."
+            status = run.get("status", "unknown")
+            agent_id = run.get("id", "unknown")
+            suffix = f": {summary}" if summary else ""
+            print(f"\n[agent {agent_id} {status}]{suffix}")
+        except Exception:
+            pass
+
     def _persist_agent_run(self, run: Dict) -> None:
         """Write a finished sub-agent run's transcript to disk for audit/debugging.
 
-        Called from the sub-agent's own worker thread via
-        `AgentPool(on_finish=...)` — must stay filesystem-only (a plain
-        write to this run's own file has no shared state to race on) and
-        never touch the interactive renderer/stdout, which are not
-        thread-safe. Any live "agent finished" notice to the user happens
-        separately on the main thread, right after `_handle_tool_calls`
-        collects each spawn_agent call's result.
+        Called from the sub-agent's own worker thread via `_on_agent_finish`
+        — must stay filesystem-only (a plain write to this run's own file
+        has no shared state to race on) and never touch the interactive
+        renderer, which is not thread-safe.
         """
         if self.session is None:
             return
