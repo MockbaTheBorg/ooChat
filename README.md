@@ -101,12 +101,12 @@ Input is handled by `prompt_toolkit` with:
 - `Shift+Enter` newline when the terminal/prompt-toolkit build supports it
 - `Tab` to accept autosuggest text or open completion
 - `/command` completion
-- `/model <name>` / `/blacklist [--local] <name>` model-name completion
+- `/model <name>` model-name completion
 - `%skill` name completion
 - `PageUp` and `PageDown` to page through conversation slices in the terminal redraw view
 - persistent status line at the bottom showing the current selected model (left), an active-turn/running-job indicator when there's something to show (middle — omitted while idle), and the context size in tokens and bytes (right)
 
-Turn processing (the model call plus any tool calls it triggers, including `spawn_agent`) runs on a background thread so submitting a message returns control to the prompt immediately instead of blocking until the turn finishes; only one turn runs at a time (a second message while one is active is rejected with a message, not queued). The middle toolbar segment and the running-job count come from `modules/jobs.py:JobRegistry`, which composes `AgentPool`'s sub-agent runs with round-loop jobs like the [Forge Loop](#forge-loop) into one view — see `/agents` for the full run list.
+Turn processing (the model call plus any tool calls it triggers, including `spawn_agent`) runs on a background thread so submitting a message returns control to the prompt immediately instead of blocking until the turn finishes; only one turn runs at a time (a second message while one is active is rejected with a message, not queued). The middle toolbar segment and the running-job count come from `modules/jobs.py:JobRegistry`, which composes `AgentPool`'s sub-agent runs with (future) Gauntlet Loop rounds into one view — see `/agents` for the full run list.
 
 A sub-agent also prints a one-line live notice the moment it finishes — `[agent <id> done: <summary>]` — rather than waiting for its parent turn to get around to it; `<id>` is the same id `/agents kill <id>` accepts. `patch_stdout` (above) keeps this from corrupting a live input line.
 
@@ -146,8 +146,8 @@ Only keys present in `modules/globals.py` defaults are loaded from config files.
 | `max_memory_chars` | `4096` | Max characters of `./.ooChat/memory.md` injected into the system prompt (see [Project Memory](#project-memory)). Older entries are truncated first. |
 | `caveman_style` | `off` | Response style level injected into the system prompt: `off`, `lite`, `full`, or `ultra` (see [Caveman Style Mode](#caveman-style-mode)). |
 | `rtk_enabled` | `false` | Transparently rewrite simple, allow-listed `run_shell` commands to run through [rtk](#rtk-aware-run_shell) for token savings. |
-| `rtk_allowed_commands` | `["git", "gh", "find", "grep", "rg", "ls", "tree", "wc", "diff", "curl", "wget"]` | Leading command tokens eligible for rtk rewriting when `rtk_enabled` is true. Kept to universal, mostly-read-only inspection commands rather than stack-specific build tools (`npm`, `cargo`, `docker`, etc.) — add those yourself per-project if useful. |
-| `forge_max_rounds` | `8` | Cap on builder/verifier rounds for `/forge` (see [Forge Loop](#forge-loop)) before giving up without passing. |
+| `rtk_allowed_commands` | `["git"]` | Leading command tokens eligible for rtk rewriting when `rtk_enabled` is true. |
+| `gauntlet_max_rounds` | `8` | Cap on builder/critic rounds for `/gauntlet` (see [Gauntlet Loop](#gauntlet-loop)) before giving up without a win. |
 
 Example:
 
@@ -178,8 +178,8 @@ Example:
   "max_memory_chars": 4096,
   "caveman_style": "off",
   "rtk_enabled": false,
-  "rtk_allowed_commands": ["git", "gh", "find", "grep", "rg", "ls", "tree", "wc", "diff", "curl", "wget"],
-  "forge_max_rounds": 8
+  "rtk_allowed_commands": ["git"],
+  "gauntlet_max_rounds": 8
 }
 ```
 
@@ -277,81 +277,21 @@ without duplication. The same `/system` limitation as project memory
 applies: replacing the system prompt wholesale drops the style block until
 the next `/caveman` call or relaunch.
 
-## Model Blacklist
+## Gauntlet Loop
 
-Excludes specific models from actual use on the current endpoint (host:port)
-— e.g. ones a provider like NVIDIA lists but that error out or misbehave —
-without hiding them from view: a blacklisted model still shows up in every
-`/model`/`/health` listing, so it's always clear what the endpoint actually
-offers versus what's been excluded.
+An iterative builder/critic refinement loop, adapted from [robonuggets/gauntlet-loop](https://github.com/robonuggets/gauntlet-loop):
 
 ```text
-/blacklist              # list models blacklisted for this endpoint
-/blacklist <name>       # toggle: blacklist it, or remove it if already blacklisted
-/blacklist #n           # same, by number from /model's last listing
-/blacklist --local      # bootstrap a project-local blacklist (see below)
+/gauntlet <goal>
 ```
 
-Enforced in two places: `/model` refuses to select a blacklisted model
-(by name or `#n`), and `AgentPool` refuses to spawn a sub-agent with one
-(`spawn_agent`'s `model`/`tier` args), in both cases before any network
-request is attempted. Session/CLI startup validation also unsets a
-model that's since been blacklisted, the same way it already handles an
-unknown one.
+1. **Quality bar.** The model proposes 2-3 concrete reference standards for the goal — each must be a real, existing file path or URL, not an abstract description. Pick one, or supply your own reference. The chosen bar is fetched immediately (via `read_file` or `web_scrape`) and gate-checked; an unfetchable choice is rejected and you're re-prompted.
+2. **Builder/critic rounds (backgrounded).** Once the bar is confirmed, the rounds run on their own background thread — the prompt returns immediately with a job id, and you can keep using ooChat while it runs. A builder sub-agent attempts the goal; a critic sub-agent does a *blind* comparison between the builder's attempt and the bar — labeled "Candidate 1"/"Candidate 2" in a randomized order each round, so the critic never knows which is which. The critic ends its answer with `VERDICT: 1` or `VERDICT: 2`. Progress and the final result print live as they happen (`[gauntlet <id>] round N: ...`), and the run shows up in the toolbar's job count (`modules/jobs.py:JobRegistry`) alongside any `spawn_agent` runs.
+3. **Loop or stop.** If the builder's attempt wins, the loop stops and returns it. Otherwise the critic's reasoning is fed back to the builder for the next attempt, up to `gauntlet_max_rounds` (default 8).
 
-Storage: `~/.ooChat/blacklist.json`, partitioned by endpoint. A
-project-local blacklist (`.ooChat/blacklist.json`) — created via
-`/blacklist --local` or by hand — **fully overrides** the global one
-for that project (not merged with it) for as long as the local file
-exists, even if it's empty; every `/blacklist` call transparently
-targets whichever file is currently active.
+Both roles run as isolated sub-agents on the same shared `AgentPool` that backs `spawn_agent`/`/agents` (`modules/gauntlet.py:run_gauntlet`) — each with its own fresh context, no access to the parent conversation or to each other's reasoning. `/agents kill <id>` on the round's current sub-agent cancels the whole gauntlet early — `run_gauntlet` treats a cancelled sub-agent as a terminal error for the run.
 
-## Forge Loop
-
-An iterative build/verify refinement loop for goals with a checkable
-result (a script that must run and produce the right output, a file that
-must satisfy some concrete condition, etc.) — as opposed to subjective
-"which is better" comparisons, which this doesn't attempt:
-
-```text
-/forge [--unsafe] <goal>
-```
-
-No interactive gate — it starts immediately in the background, the
-prompt returns right away with a job id, and you can keep using ooChat
-while it runs.
-
-**`--unsafe`**: `write_file`/`run_shell` are both `destructive` tools,
-so under the default `guardrails_mode` they need interactive
-confirmation — which a sub-agent can never give, so without this flag
-the builder can only *describe* what it would write, never actually
-write it. `--unsafe` lets that run's builder/verifier run those tools
-unattended, without changing your own `guardrails_mode` — a scoped,
-per-invocation choice you make, never something the model can turn on
-for itself (it's a command-line flag, not a `spawn_agent` argument).
-
-1. **Builder.** A sub-agent implements the goal for real, using its
-   available tools (write files, run commands, etc.) — not just describe
-   what it would do. Its final answer must clearly state what it built,
-   where, and exactly how to run/check it, since the verifier only sees
-   this text, not the builder's reasoning or tool calls.
-2. **Verifier.** A separate sub-agent, with no access to the builder's
-   reasoning, independently checks the claim — using its own tools to
-   actually locate and run/test what was built, never just judging
-   prose. It ends its answer with `VERDICT: PASS` or `VERDICT: FAIL`.
-3. **Loop or stop.** If it passes, the loop stops and returns it.
-   Otherwise the verifier's reasoning is fed back to the builder for the
-   next attempt, up to `forge_max_rounds` (default 8).
-
-Progress and the final result print live as they happen (`[forge <id>]
-round N: ...`), and the run shows up in the toolbar's job count
-(`modules/jobs.py:JobRegistry`) alongside any `spawn_agent` runs. Both
-roles run as isolated sub-agents on the same shared `AgentPool` that
-backs `spawn_agent`/`/agents` (`modules/forge.py:run_forge`) — each with
-its own fresh context, no access to the parent conversation or to each
-other's reasoning. `/agents kill <id>` on the round's current sub-agent
-cancels the whole forge run early — `run_forge` treats a cancelled
-sub-agent as a terminal error for the run.
+**Adaptation from the original design:** the original spec's "single fresh-session prompt" hop (for pasting into a brand-new terminal) is skipped — ooChat already drives isolated sub-agents directly via `spawn_agent`, so that intermediate request is built internally instead of shown to the user. The critic also never "screenshots" anything — ooChat's model interface is text/tool-call only, so the bar is fetched once as text and compared as text.
 
 ## Normal Chat Flow
 
@@ -422,7 +362,6 @@ Every command file under `commands/` exports `register(chat)`. Later-loaded comm
 | `/think` | none | `/think [on|off|show|hide|context|nocontext]` | Control display and retention of `<think>` blocks. |
 | `/status` | none | `/status` | Show model, API, render mode, tools, thinking, attachments, and session paths. |
 | `/model` | none | `/model [name \| #n]` | List models, set one by name, or choose by numbered index. |
-| `/blacklist` | none | `/blacklist [--local] [name \| #n]` | List, or toggle a model in/out of, the current endpoint's blacklist (see [Model Blacklist](#model-blacklist)). |
 | `/system` | none | `/system [--reset \| --clear \| text]` | Show, set, reset, or clear the current system prompt. |
 
 ### Attachment And Context Commands
@@ -469,7 +408,7 @@ Notes:
 | `/remember` | none | `/remember <text>` | Append a line to the project's [memory file](#project-memory) and re-inject it into the live system prompt. |
 | `/memory` | none | `/memory [--clear]` | Show the project's memory file, or clear it after confirmation. |
 | `/caveman` | none | `/caveman [off\|lite\|full\|ultra]` | Show or set the [caveman-style](#caveman-style-mode) response mode. |
-| `/forge` | none | `/forge [--unsafe] <goal>` | Run a builder/verifier [Forge Loop](#forge-loop) that builds for real and independently verifies it, until it passes or rounds run out. `--unsafe` lets it use destructive tools (write files, run commands) without confirmation for that run. |
+| `/gauntlet` | none | `/gauntlet <goal>` | Run a builder/critic [Gauntlet Loop](#gauntlet-loop) against a quality bar until it wins or rounds run out. |
 
 ## Tools
 
@@ -541,9 +480,8 @@ of these hold:
   character that's actually inside quotes (e.g. `git commit -m "a | b"`),
   skipping a safe rewrite rather than risk an unsafe one.
 - The command isn't already an `rtk` invocation.
-- Its leading token (e.g. `git`) is in `rtk_allowed_commands` (default:
-  `git`, `gh`, `find`, `grep`, `rg`, `ls`, `tree`, `wc`, `diff`, `curl`,
-  `wget`).
+- Its leading token (e.g. `git`) is in `rtk_allowed_commands` (default
+  `["git"]`).
 - The `rtk` binary is actually on `PATH`.
 
 Anything that fails one of these checks — including `rtk_enabled` being
@@ -715,10 +653,9 @@ Place a `.json` file in one of the skill search paths:
 | `modules/utils.py` | Paths, file IO, session ID generation, text checks, timestamps. |
 | `modules/filters.py` | Generic filter/hook helpers; applied in the main chat flow (global filters run before command-registry filters). |
 | `modules/agents.py` | `AgentPool` sub-agent orchestration, `spawn_agent` tool, model-tier resolution. |
-| `modules/blacklist.py` | Per-endpoint model blacklist (local overrides global), backing `/blacklist` and enforced by `/model` and `AgentPool`. |
 | `modules/memory.py` | Project memory file I/O, idempotent system-prompt injection. |
-| `modules/forge.py` | Forge Loop builder/verifier round loop (`run_forge`). |
-| `modules/jobs.py` | `JobRegistry` — unified background-job view (round-loop jobs like `/forge` + `AgentPool` runs) for the bottom toolbar and completion notifications. |
+| `modules/gauntlet.py` | Gauntlet Loop builder/critic round loop (`run_gauntlet`). |
+| `modules/jobs.py` | `JobRegistry` — unified background-job view (gauntlet rounds + `AgentPool` runs) for the bottom toolbar and completion notifications. |
 
 ### Shipped Command Files
 
@@ -733,7 +670,6 @@ Place a `.json` file in one of the skill search paths:
 | `commands/globals.py` | `/globals`, `/set`, `/unset` |
 | `commands/help.py` | `/help` |
 | `commands/model.py` | `/model` |
-| `commands/blacklist.py` | `/blacklist` |
 | `commands/quit.py` | `/exit`, `/bye` |
 | `commands/redraw.py` | `/redraw` |
 | `commands/reset.py` | `/reset` |
@@ -746,7 +682,7 @@ Place a `.json` file in one of the skill search paths:
 | `commands/tools.py` | `/tools` |
 | `commands/agents.py` | `/agents` |
 | `commands/memory.py` | `/remember`, `/memory` |
-| `commands/forge.py` | `/forge` |
+| `commands/gauntlet.py` | `/gauntlet` |
 
 ## Known Behavior Notes
 

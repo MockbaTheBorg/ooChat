@@ -22,7 +22,6 @@ import os
 import signal
 import sys
 import threading
-import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,11 +30,10 @@ __version__ = "1.0.1"
 # Add parent directory to path for module imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from modules import blacklist
 from modules import globals as globals_module
 from modules import config as config_module
 from modules.agents import AgentPool, SPAWN_AGENT_TOOL_NAME, build_spawn_agent_tool, spawn_kwargs_from_tool_args
-from modules.api import APIClient, send_chat, APIError, model_is_known
+from modules.api import APIClient, send_chat, APIError
 from modules.buffer import AttachmentBuffer
 from modules.commands import CommandRegistry, load_all_commands
 from modules.context import Context
@@ -48,7 +46,7 @@ from modules.session import Session, resolve_session, list_sessions, SessionErro
 from modules.skills import SkillRegistry, load_all_skills
 from modules.style import inject_style_block
 from modules.thinking import process_assistant_response
-from modules.utils import ensure_dir, read_text_file, write_text_file
+from modules.utils import ensure_dir, write_text_file
 from modules.tools import (
     canonicalize_tool_call,
     ToolRegistry,
@@ -77,9 +75,8 @@ class ChatApp:
         self.session: Optional[Session] = None
         self.input_handler: Optional[InputHandler] = None
         self.agent_pool: Optional[AgentPool] = None
-        # Unified background-job view (round-loop jobs like /forge +
-        # AgentPool sub-agent runs) for the bottom toolbar and completion
-        # notifications.
+        # Unified background-job view (gauntlet rounds + AgentPool sub-agent
+        # runs) for the bottom toolbar and completion notifications.
         self.jobs = JobRegistry()
         self.GLOBALS = globals_module.GLOBALS
         self._quit_requested = False
@@ -143,12 +140,6 @@ class ChatApp:
         load_all_tools(self.tools, extra_tools)
         load_all_skills(self.skills, extra_skills)
 
-        # Pre-fetch and cache models list. Done before constructing
-        # AgentPool below so it can validate a sub-agent's requested
-        # model against it up front (see AgentPool's `known_models`).
-        client = APIClient()
-        self._cached_models = client.list_models()
-
         # Register the spawn_agent native tool, backed by a bounded thread
         # pool of headless sub-agents (see modules/agents.py). Registered
         # after load_all_tools so it isn't shadowed by a JSON tool file
@@ -157,10 +148,13 @@ class ChatApp:
         # _notify_agent_finished) -- safe to do from the sub-agent's own
         # worker thread since get_input() wraps session.prompt() in
         # patch_stdout() (T16), so this can't corrupt a live input line.
-        self.agent_pool = AgentPool(tools=self.tools, on_finish=self._on_agent_finish,
-                                    known_models=self._cached_models)
+        self.agent_pool = AgentPool(tools=self.tools, on_finish=self._on_agent_finish)
         spawn_tool_def, spawn_agent_fn = build_spawn_agent_tool(self.agent_pool)
         self.tools.register_native(spawn_tool_def, spawn_agent_fn)
+
+        # Pre-fetch and cache models list
+        client = APIClient()
+        self._cached_models = client.list_models()
 
         # Resolve session
         try:
@@ -196,11 +190,6 @@ class ChatApp:
             self.session = session
             if not session.session_dir.exists():
                 session.save()
-
-            # Reload this session's persisted sub-agent transcripts (if
-            # any) into the fresh AgentPool, so `/agents` shows runs from
-            # before a restart/resume, not just the current process's.
-            self._load_persisted_agent_runs()
 
             # Load context from session
             self.context = session.context
@@ -254,16 +243,23 @@ class ChatApp:
 
             # Validate chosen model against the pulled model list (if available).
             # If the model is not present in the API's model list, warn and unset.
-            if chosen_model and getattr(self, '_cached_models', None) and not model_is_known(chosen_model, self._cached_models):
-                print(f"Warning: model '{chosen_model}' not found on the API. Unsetting current model.")
-                chosen_model = None
-
-            # A model that's since been blacklisted (e.g. a session recorded
-            # it before the blacklist existed, or it came from --model)
-            # must not silently become active again on resume/launch.
-            if chosen_model and blacklist.is_blacklisted(chosen_model):
-                print(f"Warning: model '{chosen_model}' is blacklisted for this endpoint. Unsetting current model.")
-                chosen_model = None
+            if chosen_model and getattr(self, '_cached_models', None):
+                model_valid = False
+                for m in self._cached_models:
+                    if isinstance(m, str) and m == chosen_model:
+                        model_valid = True
+                        break
+                    if isinstance(m, dict):
+                        # match common keys/values like 'name' or 'id'
+                        for v in m.values():
+                            if isinstance(v, str) and v == chosen_model:
+                                model_valid = True
+                                break
+                        if model_valid:
+                            break
+                if not model_valid:
+                    print(f"Warning: model '{chosen_model}' not found on the API. Unsetting current model.")
+                    chosen_model = None
 
             globals_module.GLOBALS['model'] = chosen_model
 
@@ -737,17 +733,6 @@ class ChatApp:
                 # otherwise vanish silently on a background thread instead
                 # of surfacing like it would have on the main thread.
                 print(f"\nError while processing turn: {e}")
-                # Best-effort: an exception reaching this generic handler
-                # is by definition unanticipated -- leave a traceback on
-                # disk so a live occurrence that's hard to reproduce can
-                # be diagnosed from the session directory afterward,
-                # rather than only from this one-line message.
-                try:
-                    if self.session and getattr(self.session, 'session_dir', None):
-                        log_path = Path(self.session.session_dir) / "last_error.log"
-                        log_path.write_text(traceback.format_exc())
-                except Exception:
-                    pass
 
     def _tui_on_submit(self, text: str, ui=None) -> None:
         """Callback used by ChatUI when user submits text.
@@ -943,21 +928,6 @@ class ChatApp:
 
                 local_statuses = []
 
-                def _cancel_orphaned_agent_futures() -> None:
-                    """Cancel any spawn_agent calls in this batch that were
-                    pre-submitted (see above) but whose turn in the
-                    sequential loop below was never reached because the
-                    loop is returning early. Without this, a still-queued
-                    or still-running sub-agent from the same batch keeps
-                    going unattended after its turn has already ended --
-                    wasted work whose only trace is a late, out-of-context
-                    completion notice. Reuses AgentPool.cancel_all() (T17):
-                    single-flight means every non-terminal run at this
-                    point necessarily belongs to this batch.
-                    """
-                    if precomputed_agent_futures and self.agent_pool is not None:
-                        self.agent_pool.cancel_all()
-
                 for call in pending_tool_calls:
                     if self._turn_cancel_event.is_set():
                         # Cancel requested mid-batch (e.g. one spawn_agent
@@ -989,7 +959,6 @@ class ChatApp:
 
                     tool = self.tools.get(tool_name)
                     if not tool:
-                        _cancel_orphaned_agent_futures()
                         self._commit_turn_session_messages(turn_session_messages)
                         self._report_tool_failure(
                             tool_name,
@@ -999,7 +968,6 @@ class ChatApp:
 
                     allowed, reason = self.tools.is_allowed(tool_name)
                     if not allowed:
-                        _cancel_orphaned_agent_futures()
                         self._commit_turn_session_messages(turn_session_messages)
                         self._report_tool_failure(
                             tool_name,
@@ -1024,7 +992,6 @@ class ChatApp:
                         if confirm == 'a':
                             self._turn_auto_approve = True
                         if confirm not in ('y', 'a'):
-                            _cancel_orphaned_agent_futures()
                             self._commit_turn_session_messages(turn_session_messages)
                             self._report_tool_failure(tool_name, "Tool execution cancelled by user.")
                             return
@@ -1047,7 +1014,6 @@ class ChatApp:
                     # model's opaque tool_call_id.
 
                     if result.get("error"):
-                        _cancel_orphaned_agent_futures()
                         self._commit_turn_session_messages(turn_session_messages)
                         self._report_tool_failure(
                             tool_name,
@@ -1240,25 +1206,6 @@ class ChatApp:
             print(f"\n[agent {agent_id} {status}]{suffix}")
         except Exception:
             pass
-
-    def _load_persisted_agent_runs(self) -> None:
-        """Reload this session's persisted sub-agent transcripts
-        (`.ooChat/sessions/<id>/subagents/*.json`) into `self.agent_pool`,
-        so `/agents` shows sub-agent runs from before a restart/resume
-        too, not just the current process's. Best-effort: a malformed or
-        unreadable transcript is skipped, never fatal to startup.
-        """
-        if self.agent_pool is None or self.session is None:
-            return
-        subagents_dir = self.session.session_dir / "subagents"
-        if not subagents_dir.exists():
-            return
-        for path in sorted(subagents_dir.glob("*.json")):
-            try:
-                data = json.loads(read_text_file(path))
-                self.agent_pool.seed_run(data)
-            except Exception:
-                continue
 
     def _persist_agent_run(self, run: Dict) -> None:
         """Write a finished sub-agent run's transcript to disk for audit/debugging.
