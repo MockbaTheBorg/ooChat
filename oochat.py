@@ -31,6 +31,7 @@ __version__ = "1.0.1"
 # Add parent directory to path for module imports
 sys.path.insert(0, str(Path(__file__).parent))
 
+from modules import blacklist
 from modules import globals as globals_module
 from modules import config as config_module
 from modules.agents import AgentPool, SPAWN_AGENT_TOOL_NAME, build_spawn_agent_tool, spawn_kwargs_from_tool_args
@@ -76,9 +77,8 @@ class ChatApp:
         self.session: Optional[Session] = None
         self.input_handler: Optional[InputHandler] = None
         self.agent_pool: Optional[AgentPool] = None
-        # Unified background-job view (round-loop jobs like /forge +
-        # AgentPool sub-agent runs) for the bottom toolbar and completion
-        # notifications.
+        # Unified background-job view (gauntlet rounds + AgentPool sub-agent
+        # runs) for the bottom toolbar and completion notifications.
         self.jobs = JobRegistry()
         self.GLOBALS = globals_module.GLOBALS
         self._quit_requested = False
@@ -250,6 +250,13 @@ class ChatApp:
             # If the model is not present in the API's model list, warn and unset.
             if chosen_model and getattr(self, '_cached_models', None) and not model_is_known(chosen_model, self._cached_models):
                 print(f"Warning: model '{chosen_model}' not found on the API. Unsetting current model.")
+                chosen_model = None
+
+            # A model that's since been blacklisted (e.g. a session recorded
+            # it before the blacklist existed, or it came from --model)
+            # must not silently become active again on resume/launch.
+            if chosen_model and blacklist.is_blacklisted(chosen_model):
+                print(f"Warning: model '{chosen_model}' is blacklisted for this endpoint. Unsetting current model.")
                 chosen_model = None
 
             globals_module.GLOBALS['model'] = chosen_model

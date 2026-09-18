@@ -20,6 +20,7 @@ import uuid
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
+from . import blacklist
 from . import globals as globals_module
 from .api import APIError, model_is_known, send_chat
 from .context import Context
@@ -208,6 +209,15 @@ class AgentPool:
             result = {
                 "output": "",
                 "error": f"Model '{effective_model}' is not available on this backend.",
+                "exit_code": 1,
+            }
+            self._finish(agent_id, result)
+            return result
+
+        if blacklist.is_blacklisted(effective_model):
+            result = {
+                "output": "",
+                "error": f"Model '{effective_model}' is blacklisted for this endpoint.",
                 "exit_code": 1,
             }
             self._finish(agent_id, result)

@@ -8,6 +8,7 @@ Use #n to select model by number (e.g., /model #1).
 """
 
 import re
+from modules import blacklist
 from modules import globals as globals_module
 from modules.api import APIClient
 from modules.utils import format_table
@@ -36,6 +37,12 @@ def register(chat):
                 cached_models = getattr(chat, '_cached_models', [])
                 if 1 <= num <= len(cached_models):
                     model_name = cached_models[num - 1]["name"]
+                    if blacklist.is_blacklisted(model_name):
+                        return {
+                            "display": f"Model '{model_name}' is blacklisted for this "
+                                       "endpoint. Use /blacklist to manage it.\n",
+                            "context": None,
+                        }
                     globals_module.GLOBALS["model"] = model_name
                     # If an input session exists, reset it so the prompt style
                     # is recreated with the new model-aware color.
@@ -55,6 +62,12 @@ def register(chat):
                     }
 
             # Set model directly by name
+            if blacklist.is_blacklisted(args):
+                return {
+                    "display": f"Model '{args}' is blacklisted for this "
+                               "endpoint. Use /blacklist to manage it.\n",
+                    "context": None,
+                }
             globals_module.GLOBALS["model"] = args
             try:
                 if getattr(chat, 'input_handler', None) and getattr(chat.input_handler, 'session', None):
