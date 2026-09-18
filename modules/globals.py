@@ -21,6 +21,10 @@ DEFAULTS = {
     'default_max_tokens': None,
     'system_prompt': None,  # Default system prompt (None = no system prompt)
     'max_subagents': 20,  # concurrent sub-agent cap for spawn_agent's AgentPool
+    # Named model tiers a spawn_agent call can request via its `tier` arg
+    # instead of a literal model name. Unset entries mean that tier is not
+    # configured; no auto-classification picks one on the caller's behalf.
+    'model_tiers': {'fast': None, 'balanced': None, 'smart': None},
 }
 
 # Runtime GLOBALS dictionary (initialized with defaults, updated by config/CLI)

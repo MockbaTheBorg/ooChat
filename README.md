@@ -134,6 +134,8 @@ Only keys present in `modules/globals.py` defaults are loaded from config files.
 | `tool_timeout` | `120` | Timeout for `/shell`, `/run`, and tool execution. |
 | `default_max_tokens` | `null` | Optional request token cap sent to the API. When unset, ooChat does not impose a model response limit. |
 | `system_prompt` | `null` | Default system prompt for new or prompt-less sessions. |
+| `max_subagents` | `20` | Concurrent sub-agent cap for the `spawn_agent` tool's thread pool. |
+| `model_tiers` | `{"fast": null, "balanced": null, "smart": null}` | Named model tiers a `spawn_agent` call can request via its `tier` arg instead of a literal model name. An unset tier has no effect — there is no auto-classification; the calling model must ask for a tier explicitly, and an unconfigured or unknown tier falls back to the default model. |
 
 Example:
 
@@ -151,7 +153,13 @@ Example:
   "max_tool_output_chars": 16384,
   "tool_timeout": 120,
   "default_max_tokens": null,
-  "system_prompt": null
+  "system_prompt": null,
+  "max_subagents": 20,
+  "model_tiers": {
+    "fast": "openai/gpt-oss-20b",
+    "balanced": "openai/gpt-oss-20b",
+    "smart": "openai/gpt-oss-120b"
+  }
 }
 ```
 
