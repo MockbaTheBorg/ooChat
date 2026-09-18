@@ -17,7 +17,7 @@ import json
 import threading
 import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 from . import globals as globals_module
@@ -27,6 +27,16 @@ from .thinking import process_assistant_response
 from .tools import ToolRegistry, canonicalize_tool_call, execute_tool as run_tool
 
 SPAWN_AGENT_TOOL_NAME = "spawn_agent"
+
+_TERMINAL_STATUSES = {"done", "error", "cancelled", "timeout"}
+
+
+class AgentCancelled(Exception):
+    """Raised inside a sub-agent's turn loop when it's been cancelled."""
+
+
+class AgentTimedOut(Exception):
+    """Raised inside a sub-agent's turn loop when its wall-clock budget is up."""
 
 
 class AgentPool:
@@ -57,6 +67,8 @@ class AgentPool:
         )
         self._lock = threading.Lock()
         self._runs: Dict[str, Dict[str, Any]] = {}
+        self._cancel_events: Dict[str, threading.Event] = {}
+        self._futures: Dict[str, Future] = {}
         self._on_finish = on_finish
 
     def spawn(self, task: str, model: Optional[str] = None,
@@ -82,6 +94,7 @@ class AgentPool:
             "exit_code": int}`.
         """
         agent_id = uuid.uuid4().hex[:8]
+        cancel_event = threading.Event()
         with self._lock:
             self._runs[agent_id] = {
                 "id": agent_id,
@@ -92,9 +105,45 @@ class AgentPool:
                 "finished_at": None,
                 "result": None,
             }
-        return self._executor.submit(
+            self._cancel_events[agent_id] = cancel_event
+        future = self._executor.submit(
             self._run, agent_id, task, model, allowed_tools, context_mode, system_prompt
         )
+        with self._lock:
+            self._futures[agent_id] = future
+        return future
+
+    def cancel(self, agent_id: str) -> bool:
+        """Request cancellation of a queued or running sub-agent run.
+
+        Cooperative: a still-queued run is cancelled immediately (never
+        starts). A running one is flagged and stops at its next iteration
+        boundary — it cannot interrupt a single model request already
+        in flight, which stays bounded by the API client's own
+        `request_timeout` regardless.
+
+        Returns:
+            True if a cancel was actually applied; False if the id is
+            unknown or the run has already reached a terminal status.
+        """
+        with self._lock:
+            run = self._runs.get(agent_id)
+            cancel_event = self._cancel_events.get(agent_id)
+            future = self._futures.get(agent_id)
+
+        if run is None or cancel_event is None:
+            return False
+        if run.get("status") in _TERMINAL_STATUSES:
+            return False
+
+        if future is not None and future.cancel():
+            # Was still queued, never started running.
+            result = {"output": "", "error": "cancelled", "exit_code": 1}
+            self._finish(agent_id, result, status_override="cancelled")
+            return True
+
+        cancel_event.set()
+        return True
 
     def list_runs(self) -> List[Dict[str, Any]]:
         """Return a snapshot of all tracked runs (queued/running/done/error)."""
@@ -118,6 +167,7 @@ class AgentPool:
              system_prompt: Optional[str]) -> Dict[str, Any]:
         with self._lock:
             self._runs[agent_id]["status"] = "running"
+            cancel_event = self._cancel_events.get(agent_id)
 
         effective_model = model or globals_module.GLOBALS.get('model')
         if not effective_model:
@@ -134,15 +184,32 @@ class AgentPool:
 
         tool_schemas = self._build_sub_agent_tool_schemas(allowed_tools)
 
+        timeout_seconds = globals_module.GLOBALS.get('subagent_timeout', 300)
+        deadline = (time.time() + timeout_seconds) if timeout_seconds else None
+
+        status_override = None
         try:
-            output_text = self._drive_turn(ctx, effective_model, tool_schemas)
+            output_text = self._drive_turn(
+                ctx, effective_model, tool_schemas,
+                cancel_event=cancel_event, deadline=deadline,
+            )
             result = {"output": output_text, "error": None, "exit_code": 0}
+        except AgentCancelled:
+            result = {"output": "", "error": "cancelled", "exit_code": 1}
+            status_override = "cancelled"
+        except AgentTimedOut:
+            result = {
+                "output": "",
+                "error": f"exceeded subagent_timeout ({timeout_seconds}s)",
+                "exit_code": 1,
+            }
+            status_override = "timeout"
         except APIError as e:
             result = {"output": "", "error": str(e), "exit_code": 1}
         except Exception as e:
             result = {"output": "", "error": str(e), "exit_code": 1}
 
-        self._finish(agent_id, result)
+        self._finish(agent_id, result, status_override=status_override)
         return result
 
     def _build_sub_agent_tool_schemas(
@@ -159,20 +226,28 @@ class AgentPool:
         return schemas or None
 
     def _drive_turn(self, ctx: Context, model: str,
-                    tool_schemas: Optional[List[Dict[str, Any]]]) -> str:
+                    tool_schemas: Optional[List[Dict[str, Any]]],
+                    cancel_event: Optional[threading.Event] = None,
+                    deadline: Optional[float] = None) -> str:
         """Headless model<->tool loop for a single sub-agent run.
 
         Never touches `modules.renderer` (not thread-safe) and never
         prompts for input — destructive tools requiring confirmation are
-        refused rather than run unattended.
+        refused rather than run unattended. Raises `AgentCancelled` or
+        `AgentTimedOut` if `cancel_event`/`deadline` trip between
+        iterations (checked at each iteration boundary, not mid-request).
         """
-        max_iterations = globals_module.GLOBALS.get('max_tool_iterations', 25)
+        max_iterations = globals_module.GLOBALS.get('max_subagent_iterations', 25)
         iteration = 0
 
         while True:
             iteration += 1
+            if cancel_event is not None and cancel_event.is_set():
+                raise AgentCancelled()
+            if deadline is not None and time.time() > deadline:
+                raise AgentTimedOut()
             if iteration > max_iterations:
-                return f"[sub-agent stopped: exceeded max_tool_iterations ({max_iterations})]"
+                return f"[sub-agent stopped: exceeded max_subagent_iterations ({max_iterations})]"
 
             response_text = ""
             tool_calls: List[Dict[str, Any]] = []
@@ -233,16 +308,21 @@ class AgentPool:
         content = result.get("output") or result.get("error") or ""
         ctx.add_tool_result(call_id, str(content))
 
-    def _finish(self, agent_id: str, result: Dict[str, Any]) -> None:
+    def _finish(self, agent_id: str, result: Dict[str, Any],
+               status_override: Optional[str] = None) -> None:
         with self._lock:
             run = self._runs.get(agent_id)
             if run is not None:
-                run["status"] = "error" if result.get("error") else "done"
+                run["status"] = status_override or ("error" if result.get("error") else "done")
                 run["finished_at"] = time.time()
                 run["result"] = result
                 snapshot = dict(run)
             else:
                 snapshot = None
+            # Free the bookkeeping entries for a finished run; list_runs()
+            # already captured everything needed above.
+            self._cancel_events.pop(agent_id, None)
+            self._futures.pop(agent_id, None)
 
         if snapshot is not None and self._on_finish is not None:
             try:
@@ -317,6 +397,12 @@ def build_spawn_agent_tool(pool: AgentPool):
                     "exit_code": 1,
                 }
             future = pool.spawn(**spawn_kwargs_from_tool_args(args))
-        return future.result()
+        try:
+            return future.result()
+        except CancelledError:
+            # A queued (never-started) run cancelled via AgentPool.cancel();
+            # the Future itself raises rather than returning a value, so
+            # normalize to the same shape _finish() already recorded.
+            return {"output": "", "error": "cancelled", "exit_code": 1}
 
     return tool_def, _spawn_agent_fn

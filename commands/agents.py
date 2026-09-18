@@ -2,8 +2,8 @@
 
 Command: /agents
 Description: Lists sub-agent runs (spawn_agent) tracked by the current
-session's AgentPool — queued, running, done, or error.
-Parameters: none
+session's AgentPool — queued, running, done, error, cancelled, or timeout.
+Parameters: [kill <id>]
 """
 
 import time
@@ -49,6 +49,43 @@ def register(chat):
                 "context": None,
             }
 
+        args = args.strip()
+        if args:
+            parts = args.split(None, 1)
+            subcmd = parts[0].lower()
+            if subcmd == "kill":
+                agent_id = parts[1].strip() if len(parts) > 1 else ""
+                if not agent_id:
+                    return {
+                        "display": "Usage: `/agents kill <id>`\n",
+                        "context": None,
+                    }
+                cancelled = pool.cancel(agent_id)
+                if cancelled:
+                    return {
+                        "display": (
+                            f"\nCancel requested for agent `{agent_id}`. A queued run "
+                            "stops immediately; a running one stops at its next "
+                            "iteration boundary (a single model request already in "
+                            "flight can't be interrupted mid-call).\n"
+                        ),
+                        "context": None,
+                    }
+                run = pool.get_run(agent_id)
+                if run is None:
+                    return {
+                        "display": f"\nUnknown agent id: `{agent_id}`\n",
+                        "context": None,
+                    }
+                return {
+                    "display": f"\nAgent `{agent_id}` is already `{run.get('status')}`, nothing to cancel.\n",
+                    "context": None,
+                }
+            return {
+                "display": f"\nUnknown /agents subcommand: `{subcmd}`. Usage: `/agents` or `/agents kill <id>`\n",
+                "context": None,
+            }
+
         runs = pool.list_runs()
         if not runs:
             return {
@@ -91,12 +128,22 @@ def register(chat):
     chat.add_command(
         name="/agents",
         handler=agents_handler,
-        description="List sub-agent (spawn_agent) runs",
-        usage="",
+        description="List or cancel sub-agent (spawn_agent) runs",
+        usage="[kill <id>]",
         long_help=(
             "Lists sub-agent runs spawned via the `spawn_agent` tool for the "
-            "current session — queued, running, done, or error — newest first.\n\n"
-            "**Usage:** `/agents`\n\n"
+            "current session — queued, running, done, error, cancelled, or "
+            "timeout — newest first.\n\n"
+            "**Usage:**\n"
+            "- `/agents` — list runs\n"
+            "- `/agents kill <id>` — cancel a queued or running sub-agent. A "
+            "queued run stops immediately; a running one stops at its next "
+            "iteration boundary (can't interrupt a single model request "
+            "already in flight — that stays bounded by `request_timeout` "
+            "regardless).\n\n"
+            "Each sub-agent's own round-trip budget is `max_subagent_iterations` "
+            "(default 25) and its wall-clock budget is `subagent_timeout` "
+            "(default 300s, 0 disables).\n\n"
             "Each run's full transcript (task, model, timing, result) is "
             "persisted to `.ooChat/sessions/<session-id>/subagents/<agent-id>.json` "
             "regardless of whether it's still listed here (the in-memory pool "
