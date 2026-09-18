@@ -9,6 +9,7 @@ import threading
 import time
 import os
 import select
+import shutil
 import atexit
 import termios
 import tty
@@ -277,6 +278,46 @@ def render_markdown(text: str, stream: TextIO = None) -> None:
     stream.flush()
 
 
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds as a bracketed label, e.g. '[1.2s]' or '[1m05s]'."""
+    if seconds < 60:
+        return f"[{seconds:.1f}s]"
+    minutes, secs = divmod(int(seconds), 60)
+    return f"[{minutes}m{secs:02d}s]"
+
+
+def render_turn_separator(elapsed: Optional[float] = None) -> None:
+    """Draw the horizontal rule printed after a turn's response.
+
+    With `elapsed` given, the rule embeds it as a `[1.2s]` label, drawn
+    between the rule's two dashed segments so the label's own width is
+    subtracted from the line rather than added on top of it. Without
+    `elapsed`, draws a plain full-width rule as before.
+    """
+    label = _format_elapsed(elapsed) if elapsed is not None else None
+
+    if RICH_AVAILABLE:
+        from rich.rule import Rule
+        console = get_console()
+        try:
+            console.print(Rule(f"[dim]{label}[/dim]") if label else Rule())
+            return
+        except Exception:
+            pass
+
+    width = shutil.get_terminal_size((80, 20)).columns
+    if label:
+        text = f" {label} "
+        if len(text) < width:
+            left = (width - len(text)) // 2
+            right = width - left - len(text)
+            print(("-" * left) + text + ("-" * right))
+        else:
+            print(text.strip())
+    else:
+        print("-" * width)
+
+
 def render_markdown_panel(text: str, title: str = None,
                           style: str = "cyan", stream: TextIO = None) -> None:
     """Render text in a styled panel (for thinking blocks).
@@ -335,6 +376,10 @@ class Renderer:
         # turn header.
         self._last_printed_separator: bool = False
         self._last_role: Optional[str] = None
+        # Wall-clock start of the in-flight model response, set by
+        # `start_response()` and read by `end_response()` to show how
+        # long the turn took in the separator drawn after it.
+        self._response_start: Optional[float] = None
 
     def set_mode(self, mode: str) -> None:
         """Set render mode.
@@ -356,6 +401,7 @@ class Renderer:
         self._in_think = False
         self._current_think = ""
         self._thinking_blocks = []
+        self._response_start = time.time()
         # If in markdown mode, show a transient 'Thinking...' indicator
         # on TTYs. This is animated but non-blocking and will be stopped
         # by `end_response` before the final content is printed.
@@ -425,6 +471,12 @@ class Renderer:
         # Stop transient spinner (if any) before rendering final content.
         self._stop_spinner()
 
+        # How long this turn took, from `start_response()` to now.
+        elapsed = None
+        if self._response_start is not None:
+            elapsed = time.time() - self._response_start
+            self._response_start = None
+
         # Compose the final display text (buffer + any final_text)
         text = final_text or "".join(self._buffer)
 
@@ -439,11 +491,9 @@ class Renderer:
 
             print()  # Add newline before markdown
             render_markdown(text)
-            # Separator after assistant final answer
-            if RICH_AVAILABLE:
-                render_markdown("---")
-            else:
-                print("---")
+            # Separator after assistant final answer, with the turn's
+            # elapsed time embedded in it.
+            render_turn_separator(elapsed)
 
         # Note: thinking blocks collected during streaming are not displayed
         # here to avoid coupling rendering with thinking presentation.
