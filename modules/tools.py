@@ -32,6 +32,25 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from . import globals as globals_module
 from .utils import get_oochat_home, get_global_config_dir, get_local_config_dir
 
+# Matches ANSI/VT100 escape sequences (CSI sequences like SGR color codes,
+# OSC sequences, and other ESC-prefixed control sequences).
+_ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*\x07)")
+
+
+def _strip_ansi(text: str) -> str:
+    """Strip ANSI/VT100 escape sequences from subprocess output.
+
+    Some commands auto-colorize even when not attached to a real TTY (a
+    `color.ui`/`color.status` git config set to `always`, a shell alias
+    forcing `--color`, etc.). Left in, the raw escape bytes show as
+    garbled literal text once wrapped in a Markdown code fence (Rich
+    doesn't interpret ANSI *inside* a fence) and are sent to the model
+    verbatim in its own context, wasting tokens on content it can't use.
+    """
+    if not text:
+        return text
+    return _ANSI_ESCAPE_RE.sub("", text)
+
 
 class ToolError(Exception):
     """Tool execution error."""
@@ -310,6 +329,15 @@ def execute_tool(tool: Dict[str, Any], arguments: Dict[str, Any],
     command_variables = dict(arguments)
     if cwd is not None:
         command_variables["cwd"] = str(cwd)
+    if source_dir is not None:
+        # Where the tool's OWN script lives, independent of `cwd` (the
+        # subprocess's actual working directory, left as the caller's
+        # real cwd by default -- see resolve_tool_cwd). A tool whose
+        # script resolves a path *argument* relative to its own cwd
+        # (write_file's `path`, list_directory's target dir, etc.) needs
+        # that to stay the user's project directory; only the script's
+        # own location needs pinning to where it's actually installed.
+        command_variables["tool_dir"] = str(source_dir)
 
     # Build command
     if "command" in tool:
@@ -351,11 +379,11 @@ def execute_tool(tool: Dict[str, Any], arguments: Dict[str, Any],
             cwd=str(cwd) if cwd is not None else None,
         )
 
-        output = result.stdout
+        output = _strip_ansi(result.stdout)
 
         # Include stderr on failure
         if result.returncode != 0 and result.stderr:
-            output += f"\nStderr: {result.stderr}"
+            output += f"\nStderr: {_strip_ansi(result.stderr)}"
 
         # Truncate output
         max_chars = globals_module.GLOBALS.get("max_tool_output_chars", 16384)

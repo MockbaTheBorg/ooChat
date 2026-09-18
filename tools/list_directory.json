@@ -14,5 +14,5 @@
     },
     "required": ["path"]
   },
-  "argv": ["python3", "-u", "tools/list_directory.py"]
+  "argv": ["python3", "-u", "{tool_dir}/list_directory.py"]
 }

@@ -25,6 +25,6 @@
     },
     "required": ["url"]
   },
-  "argv": ["python3", "-u", "tools/web_scrape.py"],
+  "argv": ["python3", "-u", "{tool_dir}/web_scrape.py"],
   "timeout": 30
 }

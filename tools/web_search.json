@@ -19,6 +19,6 @@
     },
     "required": ["query"]
   },
-  "argv": ["python3", "-u", "tools/web_search.py"],
+  "argv": ["python3", "-u", "{tool_dir}/web_search.py"],
   "timeout": 30
 }
