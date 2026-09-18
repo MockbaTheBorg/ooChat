@@ -22,6 +22,18 @@ def register(chat):
         """
         from modules.renderer import redraw_conversation
 
+        # A turn running on the background worker thread may be printing
+        # concurrently (tool-execution status, completion notifications,
+        # streamed output) -- clearing the screen here would race that
+        # output rather than cleanly redraw over it, and the redraw would
+        # be stale within moments anyway. Skip rather than risk a garbled
+        # screen; same reasoning as PageUp/PageDown's guard.
+        if getattr(chat, "is_turn_active", None) and chat.is_turn_active():
+            return {
+                "display": "A turn is still in progress -- try /redraw again once it finishes.\n",
+                "context": None,
+            }
+
         # Clear the terminal before redrawing so the conversation is
         # repainted on a clean screen.
         try:

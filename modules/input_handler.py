@@ -112,16 +112,40 @@ class CommandCompleter(Completer):
                 )
 
 
-def create_key_bindings(multiline: bool = True, get_messages=None) -> KeyBindings:
+def create_key_bindings(multiline: bool = True, get_messages=None, on_cancel=None,
+                        is_turn_active=None) -> KeyBindings:
     """Create key bindings for the prompt.
 
     Args:
         multiline: Enable multiline input bindings.
+        on_cancel: Optional zero-arg callable invoked when ESC is pressed.
+            Should return True if it actually cancelled something (an
+            active turn), False otherwise -- used only to decide whether
+            to redraw after. Wired to `ChatApp.request_cancel`.
+        is_turn_active: Optional zero-arg callable returning whether a
+            turn is currently running on the background worker thread.
+            Wired to `ChatApp.is_turn_active`. When true, PageUp/PageDown
+            skip their redraw instead of racing `console.clear()` against
+            whatever the turn-worker thread is concurrently printing
+            (tool-execution status, completion notifications, etc.) --
+            the same class of race T25 fixes for the spinner specifically,
+            here for paging.
 
     Returns:
         KeyBindings instance.
     """
     bindings = KeyBindings()
+
+    @bindings.add('escape')
+    def _(event):
+        """ESC: cancel the active turn, if any. A no-op otherwise (does
+        not clear the input buffer or do anything else) so it's safe to
+        press when there's nothing to cancel."""
+        if callable(on_cancel):
+            try:
+                on_cancel()
+            except Exception:
+                pass
 
     if multiline:
         # Enter submits, Alt+Enter for newline
@@ -178,9 +202,15 @@ def create_key_bindings(multiline: bool = True, get_messages=None) -> KeyBinding
         # in regular terminal mode without requiring a separate UI mode.
         page_size = 10
 
+        def _turn_active() -> bool:
+            try:
+                return bool(is_turn_active and is_turn_active())
+            except Exception:
+                return False
+
         @bindings.add('pageup')
         def _(event):
-            if not get_messages:
+            if not get_messages or _turn_active():
                 return
             try:
                 msgs = get_messages() or []
@@ -198,7 +228,7 @@ def create_key_bindings(multiline: bool = True, get_messages=None) -> KeyBinding
 
         @bindings.add('pagedown')
         def _(event):
-            if not get_messages:
+            if not get_messages or _turn_active():
                 return
             try:
                 msgs = get_messages() or []
@@ -233,7 +263,8 @@ class InputHandler:
     def __init__(self, registry, history_file: str = None,
                  multiline: bool = True, models: list = None, get_messages=None,
                  get_status=None,
-                 mouse_support: Optional[bool] = None, skills=None):
+                 mouse_support: Optional[bool] = None, skills=None,
+                 on_cancel=None, get_confirmation_status=None):
         """Initialize input handler.
 
         Args:
@@ -244,6 +275,16 @@ class InputHandler:
             get_status: Optional callable returning `(turn_active: bool,
                 job_count: int)`, shown in the bottom toolbar. Defaults to
                 always-idle/zero if not given (e.g. in tests).
+            on_cancel: Optional zero-arg callable invoked when ESC is
+                pressed (see `create_key_bindings`). Wired to
+                `ChatApp.request_cancel`.
+            get_confirmation_status: Optional zero-arg callable returning
+                a short string (or falsy for nothing) when a tool
+                confirmation is blocked waiting on the user, e.g.
+                "confirm: write_file?". Wired to a small `ChatApp`
+                helper. Deliberately separate from the general
+                turn-active/running-job indicator (`get_status`) --
+                different concern, different urgency.
         """
         self.registry = registry
         self.multiline = multiline
@@ -253,6 +294,9 @@ class InputHandler:
         # Callable to retrieve messages for context size calculations.
         # Expected to return a list of message dicts (flattened messages).
         self.get_messages = get_messages if callable(get_messages) else (lambda: [])
+        self.get_confirmation_status = (
+            get_confirmation_status if callable(get_confirmation_status) else (lambda: "")
+        )
 
         # Callable to retrieve (turn_active, running_job_count) for the
         # bottom toolbar's middle segment. See modules/jobs.py.
@@ -275,8 +319,15 @@ class InputHandler:
         # Create completer with models list and skills registry
         self.completer = CommandCompleter(registry, models=self.models, skills=self.skills)
 
-        # Create key bindings (pass get_messages callback for paging)
-        self.bindings = create_key_bindings(multiline, get_messages=get_messages)
+        # Create key bindings (pass get_messages callback for paging).
+        # Reuses the existing get_status callable (turn_active, job_count)
+        # rather than adding a third near-duplicate "is a turn running"
+        # callable -- see get_confirmation_status's docstring above for
+        # why that split happened once already and shouldn't repeat.
+        self.bindings = create_key_bindings(
+            multiline, get_messages=get_messages, on_cancel=on_cancel,
+            is_turn_active=lambda: self.get_status()[0],
+        )
 
         # Create session
         self.session: Optional[PromptSession] = None
@@ -437,10 +488,12 @@ class InputHandler:
     def _bottom_toolbar(self):
         """Callable used by prompt_toolkit to render the bottom toolbar.
 
-        Shows the current selected model (left), an active-turn/running-job
-        indicator when there's something to show (middle — omitted entirely
-        when idle, so the idle-state toolbar is unchanged from before), and
-        the approximate context size in tokens and bytes (right), aligned to
+        Shows the current selected model (left, prefixed with a pending
+        tool-confirmation notice from `get_confirmation_status` when one is
+        blocked waiting on the user), an active-turn/running-job indicator
+        when there's something to show (middle — omitted entirely when
+        idle, so the idle-state toolbar is unchanged from before), and the
+        approximate context size in tokens and bytes (right), aligned to
         the terminal width.
         """
         try:
@@ -472,7 +525,14 @@ class InputHandler:
                 middle = f"{middle} · {job_text}" if middle else job_text
 
             right = f"Tokens: {tokens} · {self._human_bytes(size_bytes)}"
+
+            try:
+                confirmation_status = (self.get_confirmation_status() or "").strip()
+            except Exception:
+                confirmation_status = ""
             left = f"Model: {model}"
+            if confirmation_status:
+                left = f"[{confirmation_status}] " + left
 
             term_width = shutil.get_terminal_size((80, 20)).columns
 
@@ -502,7 +562,8 @@ def create_input_handler(registry, models: list = None, mouse_support: Optional[
         registry: Command registry.
         models: Optional list of model dicts for autocomplete.
         **kwargs: Additional arguments for InputHandler.  Accepts:
-            get_messages, get_status, multiline, history_file, skills.
+            get_messages, get_status, multiline, history_file, skills,
+            on_cancel, get_confirmation_status.
 
     Returns:
         InputHandler instance.
@@ -510,4 +571,6 @@ def create_input_handler(registry, models: list = None, mouse_support: Optional[
     return InputHandler(registry, models=models, get_messages=kwargs.get('get_messages'),
                         get_status=kwargs.get('get_status'),
                         multiline=kwargs.get('multiline', True), history_file=kwargs.get('history_file'),
-                        mouse_support=mouse_support, skills=kwargs.get('skills'))
+                        mouse_support=mouse_support, skills=kwargs.get('skills'),
+                        on_cancel=kwargs.get('on_cancel'),
+                        get_confirmation_status=kwargs.get('get_confirmation_status'))
