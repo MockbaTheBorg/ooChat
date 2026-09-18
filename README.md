@@ -132,9 +132,12 @@ Only keys present in `modules/globals.py` defaults are loaded from config files.
 | `add_thinking_to_context` | `true` | Whether `<think>` blocks remain in stored assistant messages. |
 | `max_tool_output_chars` | `16384` | Max command/tool output injected into model context. |
 | `tool_timeout` | `120` | Timeout for `/shell`, `/run`, and tool execution. |
+| `max_tool_iterations` | `25` | Hard cap on model↔tool round-trips per turn; hit turns are stopped with a clear message and the session is saved. |
 | `default_max_tokens` | `null` | Optional request token cap sent to the API. When unset, ooChat does not impose a model response limit. |
 | `system_prompt` | `null` | Default system prompt for new or prompt-less sessions. |
 | `max_subagents` | `20` | Concurrent sub-agent cap for the `spawn_agent` tool's thread pool. |
+| `max_subagent_iterations` | `25` | Hard cap on model↔tool round-trips per individual sub-agent run. |
+| `subagent_timeout` | `300` | Wall-clock budget in seconds per sub-agent run. `0` or `null` disables the timeout. |
 | `model_tiers` | `{"fast": null, "balanced": null, "smart": null}` | Named model tiers a `spawn_agent` call can request via its `tier` arg instead of a literal model name. An unset tier has no effect — there is no auto-classification; the calling model must ask for a tier explicitly, and an unconfigured or unknown tier falls back to the default model. |
 
 Example:
@@ -152,9 +155,12 @@ Example:
   "add_thinking_to_context": true,
   "max_tool_output_chars": 16384,
   "tool_timeout": 120,
+  "max_tool_iterations": 25,
   "default_max_tokens": null,
   "system_prompt": null,
   "max_subagents": 20,
+  "max_subagent_iterations": 25,
+  "subagent_timeout": 300,
   "model_tiers": {
     "fast": "openai/gpt-oss-20b",
     "balanced": "openai/gpt-oss-20b",
