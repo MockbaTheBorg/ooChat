@@ -10,6 +10,7 @@ import os
 import json
 import re
 import shutil
+from pathlib import Path
 from typing import Dict, List, Optional, Callable
 
 from prompt_toolkit import PromptSession
@@ -20,6 +21,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from . import globals as globals_module
+from . import renderer as renderer_module
 
 from .utils import get_local_config_dir, ensure_dir
 
@@ -73,9 +75,18 @@ class CommandCompleter(Completer):
         """
         text = document.text_before_cursor
 
-        # Handle /model <model_name> autocomplete
-        if text.startswith('/model '):
-            model_prefix = text[7:]  # After "/model "
+        # Handle model-name autocomplete for every command that takes a
+        # model-name argument the same way /model does (currently /model
+        # itself and /blacklist, which reuses /model's numbering/name
+        # conventions -- see commands/blacklist.py).
+        for command_prefix in ('/model ', '/blacklist '):
+            if not text.startswith(command_prefix):
+                continue
+            model_prefix = text[len(command_prefix):]
+            # /blacklist --local <name> -- complete the name after the flag,
+            # not the flag itself.
+            if command_prefix == '/blacklist ' and model_prefix.startswith('--local '):
+                model_prefix = model_prefix[len('--local '):]
             for model in self.models:
                 name = model.get("name") or model.get("id", "")
                 if name.startswith(model_prefix):
@@ -306,6 +317,11 @@ class InputHandler:
         # unless explicitly enabled (e.g., in a full TUI mode).
         self.mouse_support = mouse_support if mouse_support is not None else False
 
+        # Cycled once per _bottom_toolbar() call (same refresh_interval
+        # tick that drives the toolbar itself, T32) to animate the
+        # terminal title's spinner -- see _bottom_toolbar().
+        self._title_spinner_idx = 0
+
         # Set up history
         if history_file is None:
             history_file = get_history_file()
@@ -493,6 +509,33 @@ class InputHandler:
         except Exception:
             return f"{n}B"
 
+    def _update_title(self, turn_active: bool, job_count: int) -> None:
+        """Set the terminal/tab title from the same status this toolbar
+        already computes, so multiple open windows/tabs can be told apart
+        at a glance: a spinner (only while something's actually running)
+        followed by the current folder's name, then `(n)` for the number
+        of running jobs (sub-agent runs, /forge rounds, etc.) if nonzero.
+        Idle: just the folder name. Called every refresh_interval tick
+        (T32, same 0.5s cadence as the toolbar itself) so the spinner
+        animates and the title reverts promptly once a turn/job finishes.
+        """
+        try:
+            folder = Path.cwd().name or str(Path.cwd())
+            busy = turn_active or bool(job_count)
+            if busy:
+                spinner = renderer_module.SPINNER_SEQUENCE[
+                    self._title_spinner_idx % len(renderer_module.SPINNER_SEQUENCE)
+                ]
+                self._title_spinner_idx += 1
+                title = f"{spinner} {folder}"
+                if job_count:
+                    title += f" ({job_count})"
+            else:
+                title = folder
+            renderer_module.set_terminal_title(title)
+        except Exception:
+            pass
+
     def _bottom_toolbar(self):
         """Callable used by prompt_toolkit to render the bottom toolbar.
 
@@ -526,6 +569,8 @@ class InputHandler:
                 turn_active, job_count = self.get_status()
             except Exception:
                 turn_active, job_count = False, 0
+
+            self._update_title(turn_active, job_count)
 
             middle = "● turn active" if turn_active else ""
             if job_count:
