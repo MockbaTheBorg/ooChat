@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from modules import globals as globals_module
 from modules import config as config_module
 from modules.agents import AgentPool, SPAWN_AGENT_TOOL_NAME, build_spawn_agent_tool, spawn_kwargs_from_tool_args
-from modules.api import APIClient, send_chat, APIError
+from modules.api import APIClient, send_chat, APIError, model_is_known
 from modules.buffer import AttachmentBuffer
 from modules.commands import CommandRegistry, load_all_commands
 from modules.context import Context
@@ -141,6 +141,12 @@ class ChatApp:
         load_all_tools(self.tools, extra_tools)
         load_all_skills(self.skills, extra_skills)
 
+        # Pre-fetch and cache models list. Done before constructing
+        # AgentPool below so it can validate a sub-agent's requested
+        # model against it up front (see AgentPool's `known_models`).
+        client = APIClient()
+        self._cached_models = client.list_models()
+
         # Register the spawn_agent native tool, backed by a bounded thread
         # pool of headless sub-agents (see modules/agents.py). Registered
         # after load_all_tools so it isn't shadowed by a JSON tool file
@@ -149,13 +155,10 @@ class ChatApp:
         # _notify_agent_finished) -- safe to do from the sub-agent's own
         # worker thread since get_input() wraps session.prompt() in
         # patch_stdout() (T16), so this can't corrupt a live input line.
-        self.agent_pool = AgentPool(tools=self.tools, on_finish=self._on_agent_finish)
+        self.agent_pool = AgentPool(tools=self.tools, on_finish=self._on_agent_finish,
+                                    known_models=self._cached_models)
         spawn_tool_def, spawn_agent_fn = build_spawn_agent_tool(self.agent_pool)
         self.tools.register_native(spawn_tool_def, spawn_agent_fn)
-
-        # Pre-fetch and cache models list
-        client = APIClient()
-        self._cached_models = client.list_models()
 
         # Resolve session
         try:
@@ -244,23 +247,9 @@ class ChatApp:
 
             # Validate chosen model against the pulled model list (if available).
             # If the model is not present in the API's model list, warn and unset.
-            if chosen_model and getattr(self, '_cached_models', None):
-                model_valid = False
-                for m in self._cached_models:
-                    if isinstance(m, str) and m == chosen_model:
-                        model_valid = True
-                        break
-                    if isinstance(m, dict):
-                        # match common keys/values like 'name' or 'id'
-                        for v in m.values():
-                            if isinstance(v, str) and v == chosen_model:
-                                model_valid = True
-                                break
-                        if model_valid:
-                            break
-                if not model_valid:
-                    print(f"Warning: model '{chosen_model}' not found on the API. Unsetting current model.")
-                    chosen_model = None
+            if chosen_model and getattr(self, '_cached_models', None) and not model_is_known(chosen_model, self._cached_models):
+                print(f"Warning: model '{chosen_model}' not found on the API. Unsetting current model.")
+                chosen_model = None
 
             globals_module.GLOBALS['model'] = chosen_model
 

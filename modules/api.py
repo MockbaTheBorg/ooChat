@@ -24,6 +24,26 @@ class APIError(Exception):
     pass
 
 
+def model_is_known(name: str, cached_models: Optional[List[Any]]) -> bool:
+    """Check whether `name` is present in a model list from `APIClient.list_models()`.
+
+    Handles both shapes `list_models()` can return: a bare string, or a
+    dict with the name under any key (e.g. Ollama's `{"name": ...}` or
+    the normalized `{"name": ..., "id": ...}` from the OpenAI-compatible
+    endpoint). Returns True unconditionally if `cached_models` is falsy
+    (empty/None) -- an unavailable model list must never block use of a
+    model, it just means there's nothing to validate against.
+    """
+    if not cached_models:
+        return True
+    for m in cached_models:
+        if isinstance(m, str) and m == name:
+            return True
+        if isinstance(m, dict) and any(v == name for v in m.values() if isinstance(v, str)):
+            return True
+    return False
+
+
 class APIClient:
     """HTTP client for chat API."""
 

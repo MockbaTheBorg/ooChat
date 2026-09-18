@@ -21,7 +21,7 @@ from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 from . import globals as globals_module
-from .api import APIError, send_chat
+from .api import APIError, model_is_known, send_chat
 from .context import Context
 from .thinking import process_assistant_response
 from .tools import ToolRegistry, canonicalize_tool_call, execute_tool as run_tool
@@ -43,7 +43,8 @@ class AgentPool:
     """Bounded thread pool for running sub-agent turns concurrently."""
 
     def __init__(self, tools: Optional[ToolRegistry] = None, max_workers: Optional[int] = None,
-                on_finish: Optional[Callable[[Dict[str, Any]], None]] = None):
+                on_finish: Optional[Callable[[Dict[str, Any]], None]] = None,
+                known_models: Optional[List[Any]] = None):
         """Initialize the pool.
 
         Args:
@@ -59,6 +60,12 @@ class AgentPool:
                 not thread-safe (e.g. the interactive renderer); a
                 filesystem write keyed by the run's own id is safe.
                 Exceptions raised by the callback are swallowed.
+            known_models: Optional model list (same shape as
+                `APIClient.list_models()`) used to reject a run whose
+                resolved model isn't actually served, before ever
+                attempting the request. None or empty disables the
+                check entirely -- an unavailable/unfetched model list
+                must never block a run.
         """
         self.tools = tools
         self._max_workers = max_workers or globals_module.GLOBALS.get('max_subagents', 20)
@@ -70,6 +77,7 @@ class AgentPool:
         self._cancel_events: Dict[str, threading.Event] = {}
         self._futures: Dict[str, Future] = {}
         self._on_finish = on_finish
+        self._known_models = known_models
 
     def spawn(self, task: str, model: Optional[str] = None,
              allowed_tools: Optional[List[str]] = None,
@@ -191,6 +199,15 @@ class AgentPool:
             result = {
                 "output": "",
                 "error": "No model available for sub-agent (none configured)",
+                "exit_code": 1,
+            }
+            self._finish(agent_id, result)
+            return result
+
+        if not model_is_known(effective_model, self._known_models):
+            result = {
+                "output": "",
+                "error": f"Model '{effective_model}' is not available on this backend.",
                 "exit_code": 1,
             }
             self._finish(agent_id, result)
