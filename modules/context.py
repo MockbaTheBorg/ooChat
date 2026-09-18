@@ -297,25 +297,3 @@ class Context:
         """Clear all interactions but keep system prompt."""
         self.interactions = []
         self.next_id = 1
-
-
-def compact_context(context: Context, model: str, keep_last: int = 3,
-                    summarizer=None) -> Context:
-    """Compact context by summarizing older messages.
-
-    Args:
-        context: Context to compact.
-        model: Model to use for summarization.
-        keep_last: Number of recent turns to keep verbatim.
-        summarizer: Optional function to generate summary.
-
-    Returns:
-        Compacted context.
-    """
-    if context.get_turn_count() <= keep_last:
-        return context
-
-    # This is a placeholder - actual implementation would call the model
-    # to summarize older messages and replace them with a summary
-    context.truncate(keep_last)
-    return context
