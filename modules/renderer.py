@@ -307,7 +307,7 @@ class Renderer:
         # separator (HR) was printed after it. This persists state
         # across redraws so callers (like the prompt renderer) can
         # decide whether to emit a separator before printing a new
-        # interaction header.
+        # turn header.
         self._last_printed_separator: bool = False
         self._last_role: Optional[str] = None
 
@@ -714,7 +714,7 @@ def redraw_conversation(messages: List[Dict[str, Any]],
         except Exception:
             pass
 
-    # session_id header intentionally omitted; interaction ids are printed
+    # session_id header intentionally omitted; turn ids are printed
     # immediately before prompts that will create context.
 
     if show_header:
@@ -724,23 +724,23 @@ def redraw_conversation(messages: List[Dict[str, Any]],
         else:
             print("=== Conversation ===\n")
 
-    last_interaction_id = None
+    last_turn_id = None
     last_printed_separator = False
     last_role = None
 
     for msg in messages:
-        # If we've moved to a new interaction, print a separator between
-        # full interactions (but avoid duplicating if a separator was
+        # If we've moved to a new turn, print a separator between
+        # full turns (but avoid duplicating if a separator was
         # just printed by the previous assistant rendering).
-        inter_id = msg.get("interaction_id")
-        # Print a separator when starting a new interaction. Avoid
+        turn_id = msg.get("turn_id")
+        # Print a separator when starting a new turn. Avoid
         # duplicating separators printed by assistant rendering, but
         # ensure we print one when the previous message was a tool
         # result (tools don't emit an HR themselves).
         need_separator = (
-            inter_id is not None
-            and inter_id != last_interaction_id
-            and last_interaction_id is not None
+            turn_id is not None
+            and turn_id != last_turn_id
+            and last_turn_id is not None
             and (not last_printed_separator or last_role == "tool")
         )
         if need_separator:
@@ -758,29 +758,29 @@ def redraw_conversation(messages: List[Dict[str, Any]],
         content = msg.get("content", "")
         is_local = bool(msg.get("local", False))
         if role == "user":
-            # Print an interaction header before the user prompt when the
-            # interaction id changes. This shows `Interaction: #n` colored
+            # Print a turn header before the user prompt when the
+            # turn id changes. This shows `Turn: #n` colored
             # the same way as other system messages.
             printed_header = False
             try:
-                if inter_id is not None and inter_id != last_interaction_id:
+                if turn_id is not None and turn_id != last_turn_id:
                     printed_header = True
                     if renderer:
-                        renderer.render_system_message(f"Interaction: #{inter_id}")
+                        renderer.render_system_message(f"Turn: #{turn_id}")
                     else:
                         if RICH_AVAILABLE:
                             console = get_console()
-                            console.print(f"[dim]Interaction: #{inter_id}[/dim]")
+                            console.print(f"[dim]Turn: #{turn_id}[/dim]")
                         else:
-                            print(f"Interaction: #{inter_id}")
+                            print(f"Turn: #{turn_id}")
             except Exception:
                 try:
-                    print(f"Interaction: #{inter_id}")
+                    print(f"Turn: #{turn_id}")
                 except Exception:
                     pass
 
             # Show user prompt with green >>> if possible. When we just
-            # printed an interaction header, avoid emitting an extra blank
+            # printed a turn header, avoid emitting an extra blank
             # line before the prompt.
             try:
                 if renderer:
@@ -842,8 +842,8 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 render_content = content
 
             if getattr(renderer, 'mode', 'markdown') == "markdown":
-                # Render assistant content; interaction ids are shown before
-                # the user prompt for each interaction, so do not include an
+                # Render assistant content; turn ids are shown before
+                # the user prompt for each turn, so do not include an
                 # inline id here.
                 if RICH_AVAILABLE and is_local:
                     console = get_console()
@@ -921,11 +921,11 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 print(f"[Tool result]:\n{render_content}\n")
             last_printed_separator = False
 
-        # Update last_interaction_id and last_role now that the message
+        # Update last_turn_id and last_role now that the message
         # has been rendered so future iterations can determine whether a
         # separator is needed.
         last_role = role
-        last_interaction_id = inter_id
+        last_turn_id = turn_id
 
     # Persist the last rendered role and separator state on the
     # renderer so callers (for example the prompt printer) can decide

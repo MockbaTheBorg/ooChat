@@ -301,7 +301,7 @@ class ChatApp:
     def wait_for_turn(self, timeout: Optional[float] = None) -> bool:
         """Block until the current turn (if any) finishes.
 
-        Primarily for tests that exercise `_chat_turn`/`_process_request`
+        Primarily for tests that exercise `_chat_turn`/`_process_prompt`
         and then need to assert on their effects synchronously, since
         turn processing itself now runs on a background thread.
 
@@ -500,16 +500,16 @@ class ChatApp:
             self._collect_confirmation_answer(self._pending_confirmation)
             return
 
-        # Show the upcoming interaction id before the prompt only when
+        # Show the upcoming turn id before the prompt only when
         # the input will be stored (i.e. a model is selected) AND no
         # turn from a previous submission is still running. Since T16,
         # this method returns almost immediately after starting a turn
         # on the background worker thread, so the very next call here can
         # happen while that turn is still in flight -- context.add_user()
         # (which is what actually advances next_id) runs right at the
-        # start of _process_request, well before the model call finishes,
-        # so without this guard the header for interaction N+1 prints
-        # before interaction N's response has even rendered, making the
+        # start of _process_prompt, well before the model call finishes,
+        # so without this guard the header for turn N+1 prints
+        # before turn N's response has even rendered, making the
         # response appear to trail the wrong header. Skipping it here
         # just means a bare `>>>` while a turn is active; the correctly
         # labeled header reappears on the next idle loop once the
@@ -533,9 +533,9 @@ class ChatApp:
                             else:
                                 print("---")
 
-                        self.renderer.render_system_message(f"Interaction: #{next_iid}")
+                        self.renderer.render_system_message(f"Turn: #{next_iid}")
                     except Exception:
-                        print(f"Interaction: #{next_iid}")
+                        print(f"Turn: #{next_iid}")
         except Exception:
             pass
 
@@ -594,7 +594,7 @@ class ChatApp:
             return
 
         self._turn_thread = threading.Thread(
-            target=self._process_request, args=(text,),
+            target=self._process_prompt, args=(text,),
             daemon=True, name="ooChat-turn",
         )
         self._turn_thread.start()
@@ -617,7 +617,7 @@ class ChatApp:
         self._confirmation_answer = answer
         self._confirmation_event.set()
 
-    def _process_request(self, text: str) -> None:
+    def _process_prompt(self, text: str) -> None:
         """Process one submitted user message: pre-filters, the model call
         (streamed), and any tool calls it triggers.
 
@@ -628,21 +628,21 @@ class ChatApp:
         with self._turn_lock:
             try:
                 # Process through pre-filters
-                request = self.filters.apply_pre_send(text)
-                request = self.registry.apply_pre_filters(request)
+                prompt = self.filters.apply_pre_send(text)
+                prompt = self.registry.apply_pre_filters(prompt)
 
                 # Add attachments
                 if self.buffer.has_attachments():
-                    request = self.buffer.pop_and_prepend(request)
+                    prompt = self.buffer.pop_and_prepend(prompt)
 
                 # If no model is selected yet, notify the user and don't send.
                 model = self.GLOBALS.get('model')
                 if not model:
-                    print("\nNo model selected. Use /model to select a model before sending requests.")
+                    print("\nNo model selected. Use /model to select a model before sending prompts.")
                     return
 
                 # Add user message to context
-                self.context.add_user(request)
+                self.context.add_user(prompt)
 
                 # Send to model
                 tools = self.tools.get_tool_schemas() if self.GLOBALS.get('enable_tools') else None
@@ -693,7 +693,7 @@ class ChatApp:
                             renderer_module.print_interrupt_message()
                         except Exception:
                             print("\nTurn cancelled.")
-                        self.context.discard_current_interaction()
+                        self.context.discard_current_turn()
                         return
 
                     # Process thinking blocks first so thinking is shown before response
@@ -727,7 +727,7 @@ class ChatApp:
 
                 except APIError as e:
                     print(f"\nAPI error: {e}")
-                    self.context.discard_current_interaction()
+                    self.context.discard_current_turn()
             except Exception as e:
                 # Top-level safety net: an unhandled exception here would
                 # otherwise vanish silently on a background thread instead
@@ -760,23 +760,23 @@ class ChatApp:
             return
 
         # Normal message flow (apply global then command filters)
-        request = self.filters.apply_pre_send(text)
-        request = self.registry.apply_pre_filters(request)
+        prompt = self.filters.apply_pre_send(text)
+        prompt = self.registry.apply_pre_filters(prompt)
 
         # Attachments
         if self.buffer.has_attachments():
-            request = self.buffer.pop_and_prepend(request)
+            prompt = self.buffer.pop_and_prepend(prompt)
 
-        # If no model is selected yet, notify and don't send the request.
+        # If no model is selected yet, notify and don't send the prompt.
         model = self.GLOBALS.get('model')
         if not model:
             if ui:
-                ui.append_assistant("No model selected. Use /model to select a model before sending requests.")
+                ui.append_assistant("No model selected. Use /model to select a model before sending prompts.")
             else:
-                print("\nNo model selected. Use /model to select a model before sending requests.")
+                print("\nNo model selected. Use /model to select a model before sending prompts.")
             return
 
-        self.context.add_user(request)
+        self.context.add_user(prompt)
 
         tools = self.tools.get_tool_schemas() if self.GLOBALS.get('enable_tools') else None
         max_tokens = self.GLOBALS.get('default_max_tokens')
@@ -822,7 +822,7 @@ class ChatApp:
                 ui.append_assistant(f"API error: {e}")
             else:
                 print(f"\nAPI error: {e}")
-            self.context.discard_current_interaction()
+            self.context.discard_current_turn()
 
     def _handle_tool_calls(self, tool_calls: List[Dict],
                            assistant_content: str = "",
@@ -847,11 +847,11 @@ class ChatApp:
         turn_session_messages = []
         pending_tool_calls = tool_calls
         pending_assistant_content = assistant_content
-        # Track whether the user chose "yes for all" for this interaction.
+        # Track whether the user chose "yes for all" for this turn.
         # This flag is scoped to the lifetime of this _handle_tool_calls
-        # invocation so subsequent tool calls in the same interaction
+        # invocation so subsequent tool calls in the same turn
         # are auto-approved when set.
-        self._interaction_auto_approve = False
+        self._turn_auto_approve = False
         max_iterations = self.GLOBALS.get('max_tool_iterations', 25)
         iteration_count = 0
         try:
@@ -869,9 +869,9 @@ class ChatApp:
 
                 pending_tool_calls = [canonicalize_tool_call(self.tools, call) for call in pending_tool_calls]
 
-                # Re-evaluate current interaction kind each loop in case it changed
-                current_inter = self.context._current_interaction()
-                interaction_is_local = (current_inter is not None and current_inter.kind == "local")
+                # Re-evaluate current turn kind each loop in case it changed
+                current_turn = self.context._current_turn()
+                turn_is_local = (current_turn is not None and current_turn.kind == "local")
 
                 batch_requires_followup = False
                 for call in pending_tool_calls:
@@ -881,7 +881,7 @@ class ChatApp:
                         batch_requires_followup = True
                         break
                     tool_handling = resolve_tool_result_handling(tool)
-                    effective_handling = "local" if (interaction_is_local or tool_handling == "local") else "model"
+                    effective_handling = "local" if (turn_is_local or tool_handling == "local") else "model"
                     if effective_handling == "model":
                         batch_requires_followup = True
                         break
@@ -983,14 +983,14 @@ class ChatApp:
                     # thread's prompt) rather than a direct input() call,
                     # which would race with prompt_toolkit's own stdin
                     # handling -- see request_confirmation()'s docstring.
-                    if reason == "NEEDS_CONFIRMATION" and not getattr(self, '_interaction_auto_approve', False):
+                    if reason == "NEEDS_CONFIRMATION" and not getattr(self, '_turn_auto_approve', False):
                         try:
                             preview = json.dumps(tool_args, ensure_ascii=False, indent=2)
                         except Exception:
                             preview = str(tool_args)
                         confirm = self.request_confirmation(tool_name, preview).strip().lower()
                         if confirm == 'a':
-                            self._interaction_auto_approve = True
+                            self._turn_auto_approve = True
                         if confirm not in ('y', 'a'):
                             self._commit_turn_session_messages(turn_session_messages)
                             self._report_tool_failure(tool_name, "Tool execution cancelled by user.")
@@ -1026,7 +1026,7 @@ class ChatApp:
 
                     # Determine per-call effective handling (local if either side is local)
                     tool_handling = resolve_tool_result_handling(tool)
-                    effective_local = (interaction_is_local or tool_handling == "local")
+                    effective_local = (turn_is_local or tool_handling == "local")
 
                     # Display raw output immediately only for local tool results.
                     # Remote tools should flow back through the model follow-up
@@ -1146,7 +1146,7 @@ class ChatApp:
                     return
         finally:
             try:
-                delattr(self, '_interaction_auto_approve')
+                delattr(self, '_turn_auto_approve')
             except Exception:
                 pass
 
@@ -1264,8 +1264,8 @@ class ChatApp:
             return {"output": "", "error": f"Tool blocked by guardrails: {reason}"}
 
         # If the tool requires confirmation, prompt the user. If the
-        # interaction-level auto-approve flag is set, skip prompting.
-        if reason == "NEEDS_CONFIRMATION" and not getattr(self, '_interaction_auto_approve', False):
+        # turn-level auto-approve flag is set, skip prompting.
+        if reason == "NEEDS_CONFIRMATION" and not getattr(self, '_turn_auto_approve', False):
             try:
                 preview = json.dumps(args, ensure_ascii=False, indent=2)
             except Exception:
@@ -1274,7 +1274,7 @@ class ChatApp:
             confirm = input(f"\nTool '{tool_name}' may modify state. Proceed? [y/a/N]: ").strip().lower()
             if confirm == 'a':
                 try:
-                    self._interaction_auto_approve = True
+                    self._turn_auto_approve = True
                 except Exception:
                     pass
             if confirm not in ('y', 'a'):

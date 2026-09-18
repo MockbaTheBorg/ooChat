@@ -97,7 +97,7 @@ def register(chat):
 
             # Non-silent: persist context into the session as a user summary
             # plus a tool message so redraw shows the output between
-            # interactions. Request a redraw rather than returning immediate
+            # turns. Request a redraw rather than returning immediate
             # display to avoid duplication.
             try:
                 # Build a short user-visible summary (exclude raw output to
