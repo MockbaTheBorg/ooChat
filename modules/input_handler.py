@@ -347,6 +347,14 @@ class InputHandler:
             multiline=self.multiline,
             mouse_support=self.mouse_support,
             prompt_continuation='... ',
+            # Without this, the bottom toolbar (turn-active/job-count,
+            # confirmation-pending hint) only redraws on a keypress --
+            # background state (a turn finishing, a job completing, a
+            # confirmation becoming pending) can sit stale on screen for
+            # as long as the user's hands are off the keyboard, e.g.
+            # mid-thought during multiline input. 0.5s keeps it feeling
+            # live without meaningfully increasing render/CPU cost.
+            refresh_interval=0.5,
         )
 
     def get_input(self, prompt: str = ">>> ") -> str:
