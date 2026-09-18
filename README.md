@@ -314,12 +314,21 @@ must satisfy some concrete condition, etc.) — as opposed to subjective
 "which is better" comparisons, which this doesn't attempt:
 
 ```text
-/forge <goal>
+/forge [--unsafe] <goal>
 ```
 
 No interactive gate — it starts immediately in the background, the
 prompt returns right away with a job id, and you can keep using ooChat
 while it runs.
+
+**`--unsafe`**: `write_file`/`run_shell` are both `destructive` tools,
+so under the default `guardrails_mode` they need interactive
+confirmation — which a sub-agent can never give, so without this flag
+the builder can only *describe* what it would write, never actually
+write it. `--unsafe` lets that run's builder/verifier run those tools
+unattended, without changing your own `guardrails_mode` — a scoped,
+per-invocation choice you make, never something the model can turn on
+for itself (it's a command-line flag, not a `spawn_agent` argument).
 
 1. **Builder.** A sub-agent implements the goal for real, using its
    available tools (write files, run commands, etc.) — not just describe
@@ -460,7 +469,7 @@ Notes:
 | `/remember` | none | `/remember <text>` | Append a line to the project's [memory file](#project-memory) and re-inject it into the live system prompt. |
 | `/memory` | none | `/memory [--clear]` | Show the project's memory file, or clear it after confirmation. |
 | `/caveman` | none | `/caveman [off\|lite\|full\|ultra]` | Show or set the [caveman-style](#caveman-style-mode) response mode. |
-| `/forge` | none | `/forge <goal>` | Run a builder/verifier [Forge Loop](#forge-loop) that builds for real and independently verifies it, until it passes or rounds run out. |
+| `/forge` | none | `/forge [--unsafe] <goal>` | Run a builder/verifier [Forge Loop](#forge-loop) that builds for real and independently verifies it, until it passes or rounds run out. `--unsafe` lets it use destructive tools (write files, run commands) without confirmation for that run. |
 
 ## Tools
 

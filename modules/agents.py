@@ -83,7 +83,8 @@ class AgentPool:
     def spawn(self, task: str, model: Optional[str] = None,
              allowed_tools: Optional[List[str]] = None,
              context_mode: str = "fresh",
-             system_prompt: Optional[str] = None) -> Future:
+             system_prompt: Optional[str] = None,
+             allow_destructive: bool = False) -> Future:
         """Submit a sub-agent run to the pool.
 
         Args:
@@ -96,6 +97,16 @@ class AgentPool:
                 only "fresh" (isolated context) is implemented.
             system_prompt: Optional system prompt for the sub-agent's
                 fresh context.
+            allow_destructive: If True, this run may execute a tool that
+                would otherwise need interactive confirmation (e.g.
+                `write_file`, `run_shell`) instead of being refused --
+                there's no one to ask inside a sub-agent, so this is an
+                explicit, per-run opt-in rather than a change to the
+                caller's own `guardrails_mode`. Deliberately not exposed
+                as a `spawn_agent` tool argument: whether to bypass
+                confirmation must stay a decision the *user* makes (e.g.
+                `/forge --unsafe`), never one the calling model can make
+                for itself.
 
         Returns:
             A `concurrent.futures.Future` resolving to a dict shaped like
@@ -116,7 +127,8 @@ class AgentPool:
             }
             self._cancel_events[agent_id] = cancel_event
         future = self._executor.submit(
-            self._run, agent_id, task, model, allowed_tools, context_mode, system_prompt
+            self._run, agent_id, task, model, allowed_tools, context_mode,
+            system_prompt, allow_destructive,
         )
         with self._lock:
             self._futures[agent_id] = future
@@ -231,7 +243,7 @@ class AgentPool:
 
     def _run(self, agent_id: str, task: str, model: Optional[str],
              allowed_tools: Optional[List[str]], context_mode: str,
-             system_prompt: Optional[str]) -> Dict[str, Any]:
+             system_prompt: Optional[str], allow_destructive: bool = False) -> Dict[str, Any]:
         with self._lock:
             self._runs[agent_id]["status"] = "running"
             cancel_event = self._cancel_events.get(agent_id)
@@ -277,6 +289,7 @@ class AgentPool:
             output_text, tool_calls_made = self._drive_turn(
                 ctx, effective_model, tool_schemas,
                 cancel_event=cancel_event, deadline=deadline,
+                allow_destructive=allow_destructive,
             )
             result = {
                 "output": output_text, "error": None, "exit_code": 0,
@@ -322,12 +335,14 @@ class AgentPool:
     def _drive_turn(self, ctx: Context, model: str,
                     tool_schemas: Optional[List[Dict[str, Any]]],
                     cancel_event: Optional[threading.Event] = None,
-                    deadline: Optional[float] = None) -> Tuple[str, int]:
+                    deadline: Optional[float] = None,
+                    allow_destructive: bool = False) -> Tuple[str, int]:
         """Headless model<->tool loop for a single sub-agent run.
 
         Never touches `modules.renderer` (not thread-safe) and never
         prompts for input — destructive tools requiring confirmation are
-        refused rather than run unattended. Raises `AgentCancelled` or
+        refused rather than run unattended, unless `allow_destructive` is
+        set (see `spawn()`'s docstring). Raises `AgentCancelled` or
         `AgentTimedOut` if `cancel_event`/`deadline` trip between
         iterations (checked at each iteration boundary, not mid-request).
 
@@ -377,9 +392,10 @@ class AgentPool:
                 return display_text or "[sub-agent requested tools but none are available]", tool_calls_made
 
             for call in tool_calls:
-                self._run_one_tool_call(ctx, call)
+                self._run_one_tool_call(ctx, call, allow_destructive=allow_destructive)
 
-    def _run_one_tool_call(self, ctx: Context, call: Dict[str, Any]) -> None:
+    def _run_one_tool_call(self, ctx: Context, call: Dict[str, Any],
+                           allow_destructive: bool = False) -> None:
         call = canonicalize_tool_call(self.tools, call)
         tool_name = call.get("function", {}).get("name")
         call_id = call.get("id", "unknown")
@@ -394,7 +410,7 @@ class AgentPool:
             ctx.add_tool_result(call_id, f"Tool blocked by guardrails: {reason}")
             return
 
-        if reason == "NEEDS_CONFIRMATION":
+        if reason == "NEEDS_CONFIRMATION" and not allow_destructive:
             ctx.add_tool_result(
                 call_id,
                 f"Tool '{tool_name}' requires confirmation and cannot run "

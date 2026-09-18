@@ -113,6 +113,7 @@ def run_forge(
     verifier_tier: Optional[str] = None,
     max_rounds: Optional[int] = None,
     on_round: Optional[Callable[[Dict[str, Any]], None]] = None,
+    allow_destructive: bool = False,
 ) -> ForgeResult:
     """Run the builder/verifier loop until the builder passes or rounds run out.
 
@@ -127,6 +128,12 @@ def run_forge(
         on_round: Optional callback invoked once per completed round with a
             small summary dict (`{"round", "passed", ...}`). Exceptions
             from it are swallowed, same as `AgentPool`'s `on_finish`.
+        allow_destructive: Passed straight through to every `pool.spawn()`
+            call this run makes (see `AgentPool.spawn()`'s docstring) --
+            without it, under the default `guardrails_mode`, the builder
+            can never actually write a file or run a command (both are
+            destructive, and a sub-agent can't be asked to confirm), so
+            it degenerates to describing work instead of doing it.
 
     Returns:
         A `ForgeResult`. `passed=True` means the verifier confirmed the
@@ -145,7 +152,8 @@ def run_forge(
     for round_num in range(1, max_rounds + 1):
         builder_task = _build_builder_task(goal, prior_feedback)
         builder_result = pool.spawn(
-            task=builder_task, model=builder_model, context_mode="fresh"
+            task=builder_task, model=builder_model, context_mode="fresh",
+            allow_destructive=allow_destructive,
         ).result()
         builder_output = (builder_result.get("output") or "").strip()
 
@@ -183,7 +191,8 @@ def run_forge(
 
         verifier_task = _build_verifier_task(goal, builder_output)
         verifier_result = pool.spawn(
-            task=verifier_task, model=verifier_model, context_mode="fresh"
+            task=verifier_task, model=verifier_model, context_mode="fresh",
+            allow_destructive=allow_destructive,
         ).result()
         verifier_output = (verifier_result.get("output") or "").strip()
 

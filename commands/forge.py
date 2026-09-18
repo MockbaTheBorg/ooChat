@@ -4,12 +4,22 @@ Command: /forge
 Description: Iteratively build and independently verify an attempt at a
 goal, using a builder/verifier sub-agent loop (see `modules/forge.py`),
 until the verifier confirms it actually works or the round cap is hit.
-Parameters: <goal>
+Parameters: [--unsafe] <goal>
 
 No interactive gate: unlike the old `/gauntlet` (which required proposing
 and confirming a fetchable reference "quality bar" before it could start),
 `/forge` starts immediately — there's nothing to compare against, only a
 claim to independently check by actually running it.
+
+`--unsafe`: under the default `guardrails_mode`, `write_file`/`run_shell`
+both need interactive confirmation, which a sub-agent can never give --
+so without this flag the builder can talk about writing a file but never
+actually write one. `--unsafe` lets *this run's* builder/verifier run
+those tools unattended, without touching the user's own `guardrails_mode`
+(a scoped, per-invocation opt-in, not a standing setting -- see
+`AgentPool.spawn()`'s `allow_destructive` docstring). Deliberately a
+command-line flag the user types, never a `spawn_agent` tool argument
+the model could set for itself.
 
 `modules.forge.run_forge()` drives the builder/verifier rounds via the
 shared `chat.agent_pool`, on its own daemon thread — the command returns
@@ -76,9 +86,15 @@ def register(chat):
     """Register the /forge command."""
 
     def forge_handler(chat, args):
+        args = args.strip()
+        unsafe = False
+        if args == "--unsafe" or args.startswith("--unsafe "):
+            unsafe = True
+            args = args[len("--unsafe"):].strip()
+
         goal = args.strip()
         if not goal:
-            return {"display": "Usage: `/forge <goal>`\n", "context": None}
+            return {"display": "Usage: `/forge [--unsafe] <goal>`\n", "context": None}
 
         pool = getattr(chat, "agent_pool", None)
         if pool is None:
@@ -110,7 +126,7 @@ def register(chat):
 
         def run_in_background():
             try:
-                result = run_forge(pool, goal, on_round=on_round)
+                result = run_forge(pool, goal, on_round=on_round, allow_destructive=unsafe)
                 chat.jobs.finish_job(job_id, "done" if result.passed else "error")
                 summary = _format_forge_result(job_id, goal, result)
                 print(summary)
@@ -125,13 +141,18 @@ def register(chat):
             target=run_in_background, daemon=True, name=f"ooChat-forge-{job_id}",
         ).start()
 
+        unsafe_notice = (
+            " **Running --unsafe**: the builder/verifier may write files "
+            "and run shell commands without confirmation for this run.\n"
+            if unsafe else ""
+        )
         return {
             "display": (
                 f"\nForge `{job_id}` started in the background (up to "
                 f"{max_rounds} rounds). Progress and the final result print "
                 "live as they happen -- keep using ooChat in the meantime. "
                 "`/agents kill <id>` on the round's current sub-agent stops "
-                "it early.\n"
+                f"it early.\n{unsafe_notice}"
             ),
             "context": None,
         }
@@ -140,7 +161,7 @@ def register(chat):
         name="/forge",
         handler=forge_handler,
         description="Build and independently verify an attempt at a goal until it works",
-        usage="<goal>",
+        usage="[--unsafe] <goal>",
         long_help=(
             "Iteratively build and verify an attempt at a goal:\n\n"
             "1. A builder sub-agent implements the goal for real, using its "
@@ -149,6 +170,14 @@ def register(chat):
             "by actually running/testing it — never just judging prose.\n"
             "3. If it fails, the verifier's reasoning is fed back to the "
             "builder for another attempt, up to `forge_max_rounds` (default 8).\n\n"
+            "**`--unsafe`**: under the default `guardrails_mode`, "
+            "`write_file`/`run_shell` need interactive confirmation, which a "
+            "sub-agent can never give -- without this flag the builder can "
+            "only describe what it would write, never actually write it. "
+            "`--unsafe` lets this run's builder/verifier run those tools "
+            "unattended, without changing your own `guardrails_mode`. A "
+            "scoped, per-run choice you make -- never something the model "
+            "can turn on for itself.\n\n"
             "Runs in the background — the prompt returns immediately with a "
             "job id, and progress/results print live as they happen. "
             "`/agents kill <id>` on the round's current sub-agent stops it early."
