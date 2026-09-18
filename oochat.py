@@ -478,10 +478,22 @@ class ChatApp:
             return
 
         # Show the upcoming interaction id before the prompt only when
-        # the input will be stored (i.e. a model is selected).
+        # the input will be stored (i.e. a model is selected) AND no
+        # turn from a previous submission is still running. Since T16,
+        # this method returns almost immediately after starting a turn
+        # on the background worker thread, so the very next call here can
+        # happen while that turn is still in flight -- context.add_user()
+        # (which is what actually advances next_id) runs right at the
+        # start of _process_prompt, well before the model call finishes,
+        # so without this guard the header for interaction N+1 prints
+        # before interaction N's response has even rendered, making the
+        # response appear to trail the wrong header. Skipping it here
+        # just means a bare `>>>` while a turn is active; the correctly
+        # labeled header reappears on the next idle loop once the
+        # in-flight turn's response has actually printed.
         try:
             model = self.GLOBALS.get('model')
-            if model:
+            if model and not self.is_turn_active():
                 next_iid = getattr(self.context, 'next_id', None)
                 if next_iid is not None:
                     try:
