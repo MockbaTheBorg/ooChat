@@ -342,6 +342,15 @@ class ChatApp:
         """
         if not self.is_turn_active():
             return False
+        # Print immediately, before anything else -- cooperative
+        # cancellation means the turn-worker thread may not actually stop
+        # for a beat (mid-stream it's checked every chunk, but nothing
+        # yields control while the model is silently "thinking" or a tool
+        # subprocess is running). Without an instant acknowledgment here,
+        # that gap reads as "Esc did nothing" rather than "still working
+        # on it" -- found live (T33): the user couldn't tell whether their
+        # Esc had registered at all.
+        print("\nCancelling...\n")
         self._turn_cancel_event.set()
         if self._pending_confirmation is not None:
             self._confirmation_answer = "n"
@@ -362,12 +371,21 @@ class ChatApp:
         owner of stdin) notices it, asks through the normal prompt, and
         calls back with the answer.
 
-        Known v1 rough edge: if the main thread is mid-edit on the next
-        prompt line when this fires, the confirmation doesn't appear
-        until that prompt returns (e.g. the user presses Enter) --
-        avoiding that needs bridging into prompt_toolkit's own event
-        loop from an arbitrary thread, which isn't done here. The bottom
-        toolbar surfaces the pending state in the meantime.
+        The main thread doesn't actually *ask* until its next
+        `_chat_turn()` loop iteration, which only happens once the
+        current `get_input()` call returns (e.g. the user presses
+        Enter) -- bridging into prompt_toolkit's own event loop from an
+        arbitrary thread to ask immediately isn't done here. But nothing
+        stopped this method from *announcing itself* immediately: found
+        live (T33) that without an explicit notice, a user sitting at a
+        fresh, unsubmitted prompt had no way to know anything was
+        waiting on them beyond a passive toolbar string easy to miss --
+        it read as a total hang, not "press Enter or Esc." This print
+        happens the instant the request is published, on the turn-worker
+        thread, safely (plain complete-line prints already survive
+        `patch_stdout` correctly -- see T16/T19/T29). The bottom toolbar
+        repeats the same hint for anyone who missed this one-time print
+        (e.g. joined the session mid-wait).
 
         Returns:
             The raw answer string (lowercased/stripped is the caller's
@@ -376,6 +394,10 @@ class ChatApp:
         self._confirmation_event.clear()
         self._confirmation_answer = None
         self._pending_confirmation = {"tool_name": tool_name, "preview": preview}
+        print(
+            f"\n[Tool '{tool_name}' needs confirmation before it can run — "
+            "press Enter to answer, or Esc to cancel this turn.]\n"
+        )
         self._confirmation_event.wait()
         answer = self._confirmation_answer or ""
         self._pending_confirmation = None
@@ -394,7 +416,8 @@ class ChatApp:
         """
         pending = self._pending_confirmation
         if pending is not None:
-            return f"confirm: {pending.get('tool_name', 'tool')}?"
+            tool_name = pending.get('tool_name', 'tool')
+            return f"confirm '{tool_name}'? [Enter to answer / Esc to cancel]"
         return ""
 
     def run(self) -> None:
