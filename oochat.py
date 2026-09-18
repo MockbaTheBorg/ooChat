@@ -23,7 +23,7 @@ import signal
 import sys
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 __version__ = "1.0.1"
 
@@ -84,6 +84,20 @@ class ChatApp:
         # via the lock -- only one turn may be in progress at a time.
         self._turn_lock = threading.Lock()
         self._turn_thread: Optional[threading.Thread] = None
+        # Set by request_cancel() (ESC/Ctrl+C while a turn is active);
+        # checked by the turn-worker thread at chunk/tool-call boundaries
+        # to abort cooperatively.
+        self._turn_cancel_event = threading.Event()
+        # Cross-thread tool-confirmation handoff: the turn-worker thread
+        # can't safely call input() itself (races with prompt_toolkit's
+        # own stdin handling on the main thread -- the same class of bug
+        # fixed for the ESC-interrupt spinner). Instead it publishes a
+        # pending request here and blocks on the event; the main thread's
+        # _chat_turn loop notices it, asks via the normal single-stdin
+        # prompt, and answers it.
+        self._pending_confirmation: Optional[Dict[str, Any]] = None
+        self._confirmation_event = threading.Event()
+        self._confirmation_answer: Optional[str] = None
 
     def initialize(self, args) -> None:
         """Initialize the application with parsed arguments.
@@ -246,6 +260,8 @@ class ChatApp:
             get_messages=lambda: self.session.context.get_flattened_messages() if self.session else [],
             skills=self.skills,
             mouse_support=False,
+            on_cancel=self.request_cancel,
+            get_confirmation_status=self._get_confirmation_status_text,
         )
 
         # Keep prompt-based input/rendering
@@ -281,6 +297,75 @@ class ChatApp:
             return True
         thread.join(timeout)
         return not thread.is_alive()
+
+    def request_cancel(self) -> bool:
+        """Request cancellation of the currently active turn, if any.
+
+        Cooperative, like `AgentPool.cancel()`: sets a flag the
+        turn-worker thread checks at chunk/tool-call boundaries, and
+        cancels any `spawn_agent` runs that turn started (their own
+        cancellation is likewise cooperative -- see `AgentPool.cancel`).
+        Does not forcibly kill anything already in flight (a single
+        model request or tool subprocess already running completes on
+        its own).
+
+        Returns:
+            True if a turn was active and cancellation was requested;
+            False if there was nothing to cancel.
+        """
+        if not self.is_turn_active():
+            return False
+        self._turn_cancel_event.set()
+        if self.agent_pool is not None:
+            self.agent_pool.cancel_all()
+        return True
+
+    def request_confirmation(self, tool_name: str, preview: str) -> str:
+        """Ask the user to confirm a guardrail-gated tool call.
+
+        Called from the turn-worker thread (inside `_handle_tool_calls`).
+        Calling `input()` directly there would race with prompt_toolkit's
+        own stdin handling on the main thread -- the same class of bug
+        fixed for the ESC-interrupt spinner in the turn-worker change.
+        Instead this publishes the request via `_pending_confirmation`
+        and blocks until the main thread's `_chat_turn` loop (the sole
+        owner of stdin) notices it, asks through the normal prompt, and
+        calls back with the answer.
+
+        Known v1 rough edge: if the main thread is mid-edit on the next
+        prompt line when this fires, the confirmation doesn't appear
+        until that prompt returns (e.g. the user presses Enter) --
+        avoiding that needs bridging into prompt_toolkit's own event
+        loop from an arbitrary thread, which isn't done here. The bottom
+        toolbar surfaces the pending state in the meantime.
+
+        Returns:
+            The raw answer string (lowercased/stripped is the caller's
+            job, matching the previous direct-input() behavior).
+        """
+        self._confirmation_event.clear()
+        self._confirmation_answer = None
+        self._pending_confirmation = {"tool_name": tool_name, "preview": preview}
+        self._confirmation_event.wait()
+        answer = self._confirmation_answer or ""
+        self._pending_confirmation = None
+        return answer
+
+    def _get_confirmation_status_text(self) -> str:
+        """Short status string for the bottom toolbar's confirmation
+        segment (empty when nothing's pending).
+
+        Deliberately narrow: a general turn-active/running-job-count
+        indicator is a separate, already-built concern (see
+        `modules/jobs.py`/`InputHandler.get_status`) -- this only covers
+        the thing that's uniquely T17's: a tool confirmation blocked
+        waiting on the user, which needs their attention more than a
+        generic "running" state does.
+        """
+        pending = self._pending_confirmation
+        if pending is not None:
+            return f"confirm: {pending.get('tool_name', 'tool')}?"
+        return ""
 
     def run(self) -> None:
         """Run the main chat loop."""
@@ -324,8 +409,14 @@ class ChatApp:
         # already has messages, the conversation is redrawn immediately so
         # the prior context is visible before prompting for input.
 
-        # Set up signal handler
+        # Set up signal handler: Ctrl+C cancels the active turn if there is
+        # one (same as ESC -- see request_cancel()), rather than always
+        # exiting. Only exits when idle, matching the plan's "cancel
+        # current turn vs exit app" split.
         def signal_handler(sig, frame):
+            if self._running and self.request_cancel():
+                print("\nCancel requested for the active turn.")
+                return
             if self._running:
                 print("\nInterrupt received. Saving session...")
                 self._save_and_exit()
@@ -348,6 +439,14 @@ class ChatApp:
 
     def _chat_turn(self) -> None:
         """Execute a single chat turn."""
+        # If the turn-worker thread is waiting on a tool-confirmation
+        # answer, handle that first instead of treating input as a new
+        # chat message -- see request_confirmation()'s docstring for why
+        # this has to be routed through the main thread's own prompt.
+        if self._pending_confirmation is not None:
+            self._collect_confirmation_answer(self._pending_confirmation)
+            return
+
         # Show the upcoming interaction id before the prompt only when
         # the input will be stored (i.e. a model is selected).
         try:
@@ -423,9 +522,9 @@ class ChatApp:
         # point never touches the turn lock.
         if self.is_turn_active():
             print(
-                "\nA turn is already in progress -- wait for it to finish "
-                "before sending another message. Use /agents to check on "
-                "any sub-agent runs it started.\n"
+                "\nA turn is already in progress -- press ESC to cancel it, "
+                "or wait for it to finish before sending another message. "
+                "Use /agents to check on any sub-agent runs it started.\n"
             )
             return
 
@@ -434,6 +533,24 @@ class ChatApp:
             daemon=True, name="ooChat-turn",
         )
         self._turn_thread.start()
+
+    def _collect_confirmation_answer(self, pending: Dict[str, Any]) -> None:
+        """Main-thread half of `request_confirmation()`: ask for the
+        answer through the normal single-stdin-owner prompt and hand it
+        back to the waiting turn-worker thread."""
+        tool_name = pending.get("tool_name", "tool")
+        preview = pending.get("preview", "")
+        if preview:
+            from modules.renderer import render_markdown
+            render_markdown(f"\nPlanned execution: {tool_name}({preview})")
+        try:
+            answer = self.input_handler.get_input(
+                f"Tool '{tool_name}' may modify state. Proceed? [y/a/N]: "
+            )
+        except KeyboardInterrupt:
+            answer = "n"
+        self._confirmation_answer = answer
+        self._confirmation_event.set()
 
     def _process_prompt(self, text: str) -> None:
         """Process one submitted user message: pre-filters, the model call
@@ -470,7 +587,8 @@ class ChatApp:
                 tool_calls = []
 
                 try:
-                    # Clear any prior spinner interrupt state before starting
+                    # Clear any prior cancel/spinner-interrupt state before starting
+                    self._turn_cancel_event.clear()
                     try:
                         from modules import renderer as renderer_module
                         renderer_module.clear_spinner_interrupt()
@@ -489,16 +607,29 @@ class ChatApp:
                         if chunk.get("tool_calls"):
                             tool_calls.extend(chunk["tool_calls"])
 
-                    # If the user interrupted the spinner (ESC), abort the request
+                        if self._turn_cancel_event.is_set():
+                            break
+
+                    # If the user cancelled (ESC/Ctrl+C -> request_cancel())
+                    # or the older spinner-interrupt path fired, abort the
+                    # request rather than processing a partial response.
                     try:
                         from modules import renderer as renderer_module
-                        if renderer_module.spinner_was_interrupted():
-                            self.renderer._stop_spinner()
-                            renderer_module.print_interrupt_message()
-                            self.context.discard_current_interaction()
-                            return
+                        spinner_interrupted = renderer_module.spinner_was_interrupted()
                     except Exception:
-                        pass
+                        spinner_interrupted = False
+                    if self._turn_cancel_event.is_set() or spinner_interrupted:
+                        try:
+                            self.renderer._stop_spinner()
+                        except Exception:
+                            pass
+                        try:
+                            from modules import renderer as renderer_module
+                            renderer_module.print_interrupt_message()
+                        except Exception:
+                            print("\nTurn cancelled.")
+                        self.context.discard_current_interaction()
+                        return
 
                     # Process thinking blocks first so thinking is shown before response
                     display_text, context_text, thinking_blocks = process_assistant_response(response_text, include_blocks=True)
@@ -733,6 +864,25 @@ class ChatApp:
                 local_statuses = []
 
                 for call in pending_tool_calls:
+                    if self._turn_cancel_event.is_set():
+                        # Cancel requested mid-batch (e.g. one spawn_agent
+                        # call in this batch was cancelled via
+                        # AgentPool.cancel_all(), or the user hit ESC/
+                        # Ctrl+C while a non-agent tool call was running).
+                        # Stop starting further tool calls in this turn;
+                        # commit whatever's already been recorded rather
+                        # than silently dropping it.
+                        # Commit (not discard) -- unlike the pre-first-chunk
+                        # cancel path, real tool calls may have already run
+                        # with real side effects/output by this point; keep
+                        # whatever was recorded rather than silently
+                        # dropping the user's original message along with it.
+                        self._commit_turn_session_messages(turn_session_messages)
+                        print("\nTurn cancelled.")
+                        if self.session:
+                            self.session.save()
+                        return
+
                     tool_name = call.get("function", {}).get("name")
                     tool_args_str = call.get("function", {}).get("arguments", "{}")
                     call_id = call.get("id", "unknown")
@@ -762,14 +912,18 @@ class ChatApp:
 
                     # If the tool requires confirmation and the user has not
                     # already selected "yes for all", show a preview of the
-                    # planned call and ask for confirmation.
+                    # planned call and ask for confirmation. This runs on
+                    # the turn-worker thread, so the answer is collected
+                    # through request_confirmation() (routed via the main
+                    # thread's prompt) rather than a direct input() call,
+                    # which would race with prompt_toolkit's own stdin
+                    # handling -- see request_confirmation()'s docstring.
                     if reason == "NEEDS_CONFIRMATION" and not getattr(self, '_interaction_auto_approve', False):
                         try:
                             preview = json.dumps(tool_args, ensure_ascii=False, indent=2)
                         except Exception:
                             preview = str(tool_args)
-                        print(f"\nPlanned execution: {tool_name}({preview})")
-                        confirm = input(f"\nTool '{tool_name}' may modify state. Proceed? [y/a/N]: ").strip().lower()
+                        confirm = self.request_confirmation(tool_name, preview).strip().lower()
                         if confirm == 'a':
                             self._interaction_auto_approve = True
                         if confirm not in ('y', 'a'):

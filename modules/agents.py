@@ -145,6 +145,23 @@ class AgentPool:
         cancel_event.set()
         return True
 
+    def cancel_all(self) -> List[str]:
+        """Request cancellation of every non-terminal (queued/running) run.
+
+        Used by the turn-level cancel flow (ESC/Ctrl+C while a turn is
+        active): since only one turn is ever active at a time, every
+        currently-tracked non-terminal run necessarily belongs to it.
+
+        Returns:
+            The ids of runs a cancel was actually applied to.
+        """
+        with self._lock:
+            candidate_ids = [
+                agent_id for agent_id, run in self._runs.items()
+                if run.get("status") not in _TERMINAL_STATUSES
+            ]
+        return [agent_id for agent_id in candidate_ids if self.cancel(agent_id)]
+
     def list_runs(self) -> List[Dict[str, Any]]:
         """Return a snapshot of all tracked runs (queued/running/done/error)."""
         with self._lock:
@@ -331,11 +348,32 @@ class AgentPool:
                 pass
 
 
+def resolve_tier_model(tier: str) -> Optional[str]:
+    """Resolve a named tier (e.g. "fast") to a configured model name.
+
+    Reads `GLOBALS['model_tiers']`. Returns None if the tier is unknown or
+    not configured — callers fall back to the parent's default model, no
+    auto-classification substitutes a different tier.
+    """
+    model_tiers = globals_module.GLOBALS.get("model_tiers") or {}
+    return model_tiers.get(tier) or None
+
+
 def spawn_kwargs_from_tool_args(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract `AgentPool.spawn()` kwargs from a `spawn_agent` tool call's arguments."""
+    """Extract `AgentPool.spawn()` kwargs from a `spawn_agent` tool call's arguments.
+
+    An explicit `model` always wins. Otherwise, a `tier` is resolved via
+    `resolve_tier_model`; if that tier isn't configured, `model` stays
+    None and `AgentPool.spawn` falls back to `GLOBALS['model']`.
+    """
+    model = args.get("model") or None
+    if not model:
+        tier = args.get("tier")
+        if tier:
+            model = resolve_tier_model(tier)
     return {
         "task": args.get("task", ""),
-        "model": args.get("model") or None,
+        "model": model,
         "allowed_tools": args.get("tools") or None,
     }
 
@@ -374,7 +412,16 @@ def build_spawn_agent_tool(pool: AgentPool):
                 },
                 "model": {
                     "type": "string",
-                    "description": "Optional model override for this sub-agent. Defaults to the current model.",
+                    "description": "Optional model override for this sub-agent. Defaults to the current model. Takes precedence over 'tier' if both are given.",
+                },
+                "tier": {
+                    "type": "string",
+                    "description": (
+                        "Optional named model tier for this sub-agent (e.g. 'fast', "
+                        "'balanced', 'smart'), resolved via the configured "
+                        "model_tiers mapping. Ignored if 'model' is also given. "
+                        "If the tier isn't configured, falls back to the current model."
+                    ),
                 },
                 "tools": {
                     "type": "array",

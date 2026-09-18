@@ -112,16 +112,31 @@ class CommandCompleter(Completer):
                 )
 
 
-def create_key_bindings(multiline: bool = True, get_messages=None) -> KeyBindings:
+def create_key_bindings(multiline: bool = True, get_messages=None, on_cancel=None) -> KeyBindings:
     """Create key bindings for the prompt.
 
     Args:
         multiline: Enable multiline input bindings.
+        on_cancel: Optional zero-arg callable invoked when ESC is pressed.
+            Should return True if it actually cancelled something (an
+            active turn), False otherwise -- used only to decide whether
+            to redraw after. Wired to `ChatApp.request_cancel`.
 
     Returns:
         KeyBindings instance.
     """
     bindings = KeyBindings()
+
+    @bindings.add('escape')
+    def _(event):
+        """ESC: cancel the active turn, if any. A no-op otherwise (does
+        not clear the input buffer or do anything else) so it's safe to
+        press when there's nothing to cancel."""
+        if callable(on_cancel):
+            try:
+                on_cancel()
+            except Exception:
+                pass
 
     if multiline:
         # Enter submits, Alt+Enter for newline
@@ -232,7 +247,8 @@ class InputHandler:
 
     def __init__(self, registry, history_file: str = None,
                  multiline: bool = True, models: list = None, get_messages=None,
-                 mouse_support: Optional[bool] = None, skills=None):
+                 mouse_support: Optional[bool] = None, skills=None,
+                 on_cancel=None, get_confirmation_status=None):
         """Initialize input handler.
 
         Args:
@@ -240,6 +256,16 @@ class InputHandler:
             history_file: Path to history file. If None, uses default.
             multiline: Enable multiline input.
             models: Optional list of model dicts for autocomplete.
+            on_cancel: Optional zero-arg callable invoked when ESC is
+                pressed (see `create_key_bindings`). Wired to
+                `ChatApp.request_cancel`.
+            get_confirmation_status: Optional zero-arg callable returning
+                a short string (or falsy for nothing) when a tool
+                confirmation is blocked waiting on the user, e.g.
+                "confirm: write_file?". Wired to a small `ChatApp`
+                helper. Deliberately separate from the general
+                turn-active/running-job indicator (`get_status`) --
+                different concern, different urgency.
         """
         self.registry = registry
         self.multiline = multiline
@@ -249,6 +275,9 @@ class InputHandler:
         # Callable to retrieve messages for context size calculations.
         # Expected to return a list of message dicts (flattened messages).
         self.get_messages = get_messages if callable(get_messages) else (lambda: [])
+        self.get_confirmation_status = (
+            get_confirmation_status if callable(get_confirmation_status) else (lambda: "")
+        )
 
         # Mouse support: default to False to avoid capturing scroll events
         # unless explicitly enabled (e.g., in a full TUI mode).
@@ -268,7 +297,7 @@ class InputHandler:
         self.completer = CommandCompleter(registry, models=self.models, skills=self.skills)
 
         # Create key bindings (pass get_messages callback for paging)
-        self.bindings = create_key_bindings(multiline, get_messages=get_messages)
+        self.bindings = create_key_bindings(multiline, get_messages=get_messages, on_cancel=on_cancel)
 
         # Create session
         self.session: Optional[PromptSession] = None
@@ -431,6 +460,10 @@ class InputHandler:
 
         Shows the current selected model (left) and the approximate context
         size in tokens and bytes (right), aligned to the terminal width.
+        When a tool confirmation is pending (`get_confirmation_status`),
+        that's prepended to the left side so it's visible while the user
+        keeps typing -- otherwise it wouldn't be, since nothing else in
+        this REPL surfaces that live.
         """
         try:
             model = globals_module.get_global('model') or 'none'
@@ -451,7 +484,14 @@ class InputHandler:
             tokens = self._estimate_tokens(msgs)
 
             right = f"Tokens: {tokens} · {self._human_bytes(size_bytes)}"
+
+            try:
+                confirmation_status = (self.get_confirmation_status() or "").strip()
+            except Exception:
+                confirmation_status = ""
             left = f"Model: {model}"
+            if confirmation_status:
+                left = f"[{confirmation_status}] " + left
 
             term_width = shutil.get_terminal_size((80, 20)).columns
             # Compute padding; ensure at least one space between fields
@@ -472,11 +512,14 @@ def create_input_handler(registry, models: list = None, mouse_support: Optional[
         registry: Command registry.
         models: Optional list of model dicts for autocomplete.
         **kwargs: Additional arguments for InputHandler.  Accepts:
-            get_messages, multiline, history_file, skills.
+            get_messages, multiline, history_file, skills, on_cancel,
+            get_confirmation_status.
 
     Returns:
         InputHandler instance.
     """
     return InputHandler(registry, models=models, get_messages=kwargs.get('get_messages'),
                         multiline=kwargs.get('multiline', True), history_file=kwargs.get('history_file'),
-                        mouse_support=mouse_support, skills=kwargs.get('skills'))
+                        mouse_support=mouse_support, skills=kwargs.get('skills'),
+                        on_cancel=kwargs.get('on_cancel'),
+                        get_confirmation_status=kwargs.get('get_confirmation_status'))
