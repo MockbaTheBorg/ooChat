@@ -48,7 +48,7 @@ from modules.session import Session, resolve_session, list_sessions, SessionErro
 from modules.skills import SkillRegistry, load_all_skills
 from modules.style import inject_style_block
 from modules.thinking import process_assistant_response
-from modules.utils import ensure_dir, write_text_file
+from modules.utils import ensure_dir, read_text_file, write_text_file
 from modules.tools import (
     canonicalize_tool_call,
     ToolRegistry,
@@ -77,8 +77,9 @@ class ChatApp:
         self.session: Optional[Session] = None
         self.input_handler: Optional[InputHandler] = None
         self.agent_pool: Optional[AgentPool] = None
-        # Unified background-job view (gauntlet rounds + AgentPool sub-agent
-        # runs) for the bottom toolbar and completion notifications.
+        # Unified background-job view (round-loop jobs like /forge +
+        # AgentPool sub-agent runs) for the bottom toolbar and completion
+        # notifications.
         self.jobs = JobRegistry()
         self.GLOBALS = globals_module.GLOBALS
         self._quit_requested = False
@@ -195,6 +196,11 @@ class ChatApp:
             self.session = session
             if not session.session_dir.exists():
                 session.save()
+
+            # Reload this session's persisted sub-agent transcripts (if
+            # any) into the fresh AgentPool, so `/agents` shows runs from
+            # before a restart/resume, not just the current process's.
+            self._load_persisted_agent_runs()
 
             # Load context from session
             self.context = session.context
@@ -1234,6 +1240,25 @@ class ChatApp:
             print(f"\n[agent {agent_id} {status}]{suffix}")
         except Exception:
             pass
+
+    def _load_persisted_agent_runs(self) -> None:
+        """Reload this session's persisted sub-agent transcripts
+        (`.ooChat/sessions/<id>/subagents/*.json`) into `self.agent_pool`,
+        so `/agents` shows sub-agent runs from before a restart/resume
+        too, not just the current process's. Best-effort: a malformed or
+        unreadable transcript is skipped, never fatal to startup.
+        """
+        if self.agent_pool is None or self.session is None:
+            return
+        subagents_dir = self.session.session_dir / "subagents"
+        if not subagents_dir.exists():
+            return
+        for path in sorted(subagents_dir.glob("*.json")):
+            try:
+                data = json.loads(read_text_file(path))
+                self.agent_pool.seed_run(data)
+            except Exception:
+                continue
 
     def _persist_agent_run(self, run: Dict) -> None:
         """Write a finished sub-agent run's transcript to disk for audit/debugging.

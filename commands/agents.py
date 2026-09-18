@@ -3,7 +3,7 @@
 Command: /agents
 Description: Lists sub-agent runs (spawn_agent) tracked by the current
 session's AgentPool — queued, running, done, error, cancelled, or timeout.
-Parameters: [kill <id>]
+Parameters: [kill <id> | clean]
 """
 
 import time
@@ -81,8 +81,35 @@ def register(chat):
                     "display": f"\nAgent `{agent_id}` is already `{run.get('status')}`, nothing to cancel.\n",
                     "context": None,
                 }
+            if subcmd == "clean":
+                removed_ids = pool.prune_terminal_runs()
+                deleted_files = 0
+                session = getattr(chat, "session", None)
+                if session is not None and getattr(session, "session_dir", None):
+                    subagents_dir = session.session_dir / "subagents"
+                    for agent_id in removed_ids:
+                        try:
+                            path = subagents_dir / f"{agent_id}.json"
+                            if path.exists():
+                                path.unlink()
+                                deleted_files += 1
+                        except Exception:
+                            pass
+                if not removed_ids:
+                    return {
+                        "display": "\nNothing to clean -- no finished sub-agent runs tracked.\n",
+                        "context": None,
+                    }
+                return {
+                    "display": (
+                        f"\nCleaned {len(removed_ids)} finished sub-agent run(s) "
+                        f"from `/agents` ({deleted_files} transcript file(s) deleted). "
+                        "Queued/running runs are untouched.\n"
+                    ),
+                    "context": None,
+                }
             return {
-                "display": f"\nUnknown /agents subcommand: `{subcmd}`. Usage: `/agents` or `/agents kill <id>`\n",
+                "display": f"\nUnknown /agents subcommand: `{subcmd}`. Usage: `/agents`, `/agents kill <id>`, or `/agents clean`\n",
                 "context": None,
             }
 
@@ -128,8 +155,8 @@ def register(chat):
     chat.add_command(
         name="/agents",
         handler=agents_handler,
-        description="List or cancel sub-agent (spawn_agent) runs",
-        usage="[kill <id>]",
+        description="List, cancel, or clean up sub-agent (spawn_agent) runs",
+        usage="[kill <id> | clean]",
         long_help=(
             "Lists sub-agent runs spawned via the `spawn_agent` tool for the "
             "current session — queued, running, done, error, cancelled, or "
@@ -140,13 +167,18 @@ def register(chat):
             "queued run stops immediately; a running one stops at its next "
             "iteration boundary (can't interrupt a single model request "
             "already in flight — that stays bounded by `request_timeout` "
-            "regardless).\n\n"
+            "regardless).\n"
+            "- `/agents clean` — remove every finished (done/error/cancelled/"
+            "timeout) run from this list and delete its persisted transcript "
+            "file. Queued/running runs are never touched.\n\n"
             "Each sub-agent's own round-trip budget is `max_subagent_iterations` "
             "(default 25) and its wall-clock budget is `subagent_timeout` "
             "(default 300s, 0 disables).\n\n"
             "Each run's full transcript (task, model, timing, result) is "
-            "persisted to `.ooChat/sessions/<session-id>/subagents/<agent-id>.json` "
-            "regardless of whether it's still listed here (the in-memory pool "
-            "only tracks the current process's runs)."
+            "persisted to `.ooChat/sessions/<session-id>/subagents/<agent-id>.json`. "
+            "Resuming a session reloads its persisted transcripts back into "
+            "this list, so finished runs from before a restart still show up "
+            "here too (until `/agents clean` removes them) — not just the "
+            "current process's own runs."
         ),
     )

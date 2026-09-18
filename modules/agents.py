@@ -182,6 +182,47 @@ class AgentPool:
             run = self._runs.get(agent_id)
             return dict(run) if run else None
 
+    def seed_run(self, run: Dict[str, Any]) -> bool:
+        """Register a historical run loaded from a persisted transcript
+        (see `oochat.py:_persist_agent_run`), so `list_runs()`/`get_run()`
+        include it across a session resume -- otherwise `/agents` only
+        ever shows runs from the current process, even though the
+        transcript survives on disk. This is for history, not to fake a
+        live run: only a genuinely terminal status is accepted, and an id
+        already tracked (e.g. a run from this same process) is never
+        overwritten.
+
+        Returns:
+            True if the run was added, False if skipped (missing id,
+            non-terminal status, or id collision).
+        """
+        agent_id = run.get("id")
+        if not agent_id or run.get("status") not in _TERMINAL_STATUSES:
+            return False
+        with self._lock:
+            if agent_id in self._runs:
+                return False
+            self._runs[agent_id] = dict(run)
+        return True
+
+    def prune_terminal_runs(self) -> List[str]:
+        """Remove every terminal (done/error/cancelled/timeout) run from
+        tracking -- queued/running runs are left untouched. Their
+        persisted transcripts on disk are a separate concern for the
+        caller (see `commands/agents.py`'s `clean` subcommand).
+
+        Returns:
+            The ids removed.
+        """
+        with self._lock:
+            terminal_ids = [
+                agent_id for agent_id, run in self._runs.items()
+                if run.get("status") in _TERMINAL_STATUSES
+            ]
+            for agent_id in terminal_ids:
+                del self._runs[agent_id]
+        return terminal_ids
+
     def shutdown(self, wait: bool = False) -> None:
         """Shut down the underlying thread pool."""
         self._executor.shutdown(wait=wait)
