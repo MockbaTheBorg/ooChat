@@ -184,6 +184,11 @@ class APIClient:
                             continue
                 except RequestException as e:
                     stream_queue.put(("error", APIError(f"API request failed: {e}")))
+                except APIError as e:
+                    # Raised by _normalize_chunk() for a mid-stream
+                    # {"error": ...} payload -- already has a clean
+                    # message, don't wrap it again.
+                    stream_queue.put(("error", e))
                 except Exception as e:
                     stream_queue.put(("error", APIError(f"API request failed: {e}")))
                 finally:
@@ -334,7 +339,26 @@ class APIClient:
 
         Returns:
             Normalized chunk with 'content', 'done', 'tool_calls' fields.
+
+        Raises:
+            APIError: if the chunk itself carries an `"error"` key. A
+                backend can fail *mid-stream* with a 200-OK SSE payload
+                shaped like `{"error": {"message": ..., ...}}` rather
+                than a non-2xx HTTP status (which `raise_for_status()`
+                already catches correctly) -- found live: neither
+                `_normalize_openai_chunk` nor `_normalize_ollama_chunk`
+                looked for this, so it silently normalized to an empty
+                no-op chunk `{"content": "", "done": False, "tool_calls":
+                None}`, indistinguishable from a real, successful,
+                empty-content completion. The turn just ended with no
+                answer and no error shown. Checked here, once, ahead of
+                both dispatch targets and both the streaming and
+                non-streaming call sites that share this method.
         """
+        if "error" in chunk:
+            error = chunk["error"]
+            message = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+            raise APIError(f"Upstream error: {message}")
         if self.openai_mode:
             return self._normalize_openai_chunk(chunk)
         return self._normalize_ollama_chunk(chunk)
