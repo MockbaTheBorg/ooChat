@@ -29,8 +29,15 @@ DEFAULTS = {
     # configured; no auto-classification picks one on the caller's behalf.
     'model_tiers': {'fast': None, 'balanced': None, 'smart': None},
     'max_memory_chars': 4096,  # max chars of ./.ooChat/memory.md injected into the system prompt
+    'caveman_style': 'off',  # response style level: 'off', 'lite', 'full', 'ultra'
     'rtk_enabled': False,  # transparently rewrite simple allow-listed run_shell commands to `rtk <cmd>`
-    'rtk_allowed_commands': ['git'],  # leading tokens eligible for rtk rewriting
+    # Leading tokens eligible for rtk rewriting -- native binary names rtk
+    # mirrors 1:1 (`<cmd> ...` -> `rtk <cmd> ...`), kept to universally
+    # available, mostly-read-only inspection commands rather than
+    # stack-specific build tools (npm/cargo/docker/etc.), which a project
+    # can add itself via `rtk_allowed_commands` in .ooChat/config.json.
+    'rtk_allowed_commands': ['git', 'gh', 'find', 'grep', 'rg', 'ls', 'tree', 'wc', 'diff', 'curl', 'wget'],
+    'gauntlet_max_rounds': 8,  # cap on builder/critic rounds for /gauntlet before giving up
 }
 
 # Runtime GLOBALS dictionary (initialized with defaults, updated by config/CLI)

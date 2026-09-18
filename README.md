@@ -146,7 +146,7 @@ Only keys present in `modules/globals.py` defaults are loaded from config files.
 | `max_memory_chars` | `4096` | Max characters of `./.ooChat/memory.md` injected into the system prompt (see [Project Memory](#project-memory)). Older entries are truncated first. |
 | `caveman_style` | `off` | Response style level injected into the system prompt: `off`, `lite`, `full`, or `ultra` (see [Caveman Style Mode](#caveman-style-mode)). |
 | `rtk_enabled` | `false` | Transparently rewrite simple, allow-listed `run_shell` commands to run through [rtk](#rtk-aware-run_shell) for token savings. |
-| `rtk_allowed_commands` | `["git"]` | Leading command tokens eligible for rtk rewriting when `rtk_enabled` is true. |
+| `rtk_allowed_commands` | `["git", "gh", "find", "grep", "rg", "ls", "tree", "wc", "diff", "curl", "wget"]` | Leading command tokens eligible for rtk rewriting when `rtk_enabled` is true. Kept to universal, mostly-read-only inspection commands rather than stack-specific build tools (`npm`, `cargo`, `docker`, etc.) — add those yourself per-project if useful. |
 | `gauntlet_max_rounds` | `8` | Cap on builder/critic rounds for `/gauntlet` (see [Gauntlet Loop](#gauntlet-loop)) before giving up without a win. |
 
 Example:
@@ -178,7 +178,7 @@ Example:
   "max_memory_chars": 4096,
   "caveman_style": "off",
   "rtk_enabled": false,
-  "rtk_allowed_commands": ["git"],
+  "rtk_allowed_commands": ["git", "gh", "find", "grep", "rg", "ls", "tree", "wc", "diff", "curl", "wget"],
   "gauntlet_max_rounds": 8
 }
 ```
@@ -480,8 +480,9 @@ of these hold:
   character that's actually inside quotes (e.g. `git commit -m "a | b"`),
   skipping a safe rewrite rather than risk an unsafe one.
 - The command isn't already an `rtk` invocation.
-- Its leading token (e.g. `git`) is in `rtk_allowed_commands` (default
-  `["git"]`).
+- Its leading token (e.g. `git`) is in `rtk_allowed_commands` (default:
+  `git`, `gh`, `find`, `grep`, `rg`, `ls`, `tree`, `wc`, `diff`, `curl`,
+  `wget`).
 - The `rtk` binary is actually on `PATH`.
 
 Anything that fails one of these checks — including `rtk_enabled` being

@@ -28,6 +28,17 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+# Single source of truth for the built-in default -- mirrors
+# modules/globals.py:DEFAULTS['rtk_allowed_commands']. Imported lazily
+# (matching load_rtk_config()'s own lazy Config import below) so a
+# broken `modules` import can't prevent this subprocess from running a
+# command at all -- falls back to a literal copy if that ever happens.
+try:
+    from modules import globals as _globals_module
+    _DEFAULT_ALLOWED_COMMANDS = list(_globals_module.DEFAULTS["rtk_allowed_commands"])
+except Exception:
+    _DEFAULT_ALLOWED_COMMANDS = ['git', 'gh', 'find', 'grep', 'rg', 'ls', 'tree', 'wc', 'diff', 'curl', 'wget']
+
 # Any of these in the command string disable rewriting -- pipes, chains,
 # redirection, subshells, and backgrounding all change what "the leading
 # token" even means, so rewriting would be unsafe to assume correct.
@@ -91,9 +102,9 @@ def load_rtk_config():
         cfg = Config()
         cfg.load_global()
         cfg.load_local()
-        return bool(cfg.get("rtk_enabled", False)), list(cfg.get("rtk_allowed_commands", ["git"]))
+        return bool(cfg.get("rtk_enabled", False)), list(cfg.get("rtk_allowed_commands", _DEFAULT_ALLOWED_COMMANDS))
     except Exception:
-        return False, ["git"]
+        return False, list(_DEFAULT_ALLOWED_COMMANDS)
 
 
 def main():
