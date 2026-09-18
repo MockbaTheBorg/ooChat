@@ -140,6 +140,7 @@ Only keys present in `modules/globals.py` defaults are loaded from config files.
 | `subagent_timeout` | `300` | Wall-clock budget in seconds per sub-agent run. `0` or `null` disables the timeout. |
 | `model_tiers` | `{"fast": null, "balanced": null, "smart": null}` | Named model tiers a `spawn_agent` call can request via its `tier` arg instead of a literal model name. An unset tier has no effect — there is no auto-classification; the calling model must ask for a tier explicitly, and an unconfigured or unknown tier falls back to the default model. |
 | `max_memory_chars` | `4096` | Max characters of `./.ooChat/memory.md` injected into the system prompt (see [Project Memory](#project-memory)). Older entries are truncated first. |
+| `caveman_style` | `off` | Response style level injected into the system prompt: `off`, `lite`, `full`, or `ultra` (see [Caveman Style Mode](#caveman-style-mode)). |
 
 Example:
 
@@ -167,7 +168,8 @@ Example:
     "balanced": "openai/gpt-oss-20b",
     "smart": "openai/gpt-oss-120b"
   },
-  "max_memory_chars": 4096
+  "max_memory_chars": 4096,
+  "caveman_style": "off"
 }
 ```
 
@@ -238,6 +240,32 @@ It is scoped to the current project directory, like sessions and config. There i
 On every session launch — and after each `/remember` — the file's content is wrapped in `<!-- ooChat:project-memory:start/end -->` markers and appended to the system prompt (`modules/memory.py:inject_memory_block`). The injection always strips any previously-injected block first, so calling it repeatedly never duplicates content; on overflow it truncates from the *front* of the memory text (dropping the oldest entries first) down to `max_memory_chars`.
 
 **Known limitation:** `/system <text>`, `/system --reset`, and `/system --clear` replace `context.system_prompt` wholesale, which drops the injected memory block along with it until the next `/remember` or relaunch re-adds it. Not solved in this version.
+
+## Caveman Style Mode
+
+A runtime-only response-style switch, unlike project memory there is no file
+storage — just a `caveman_style` global (`off` by default) and a fixed
+instruction string per level, injected into the system prompt the same way:
+
+- `/caveman` with no argument shows the current level.
+- `/caveman <off|lite|full|ultra>` sets the level and immediately re-injects
+  the style block into the live system prompt.
+
+| Level | Effect |
+| --- | --- |
+| `off` | No style instruction added (default). |
+| `lite` | Terse: drops filler/hedging, keeps full sentences. |
+| `full` | Caveman fragments: also drops articles, short words over long ones. |
+| `ultra` | Fewest words possible, one line per point where possible. |
+
+Code, commands, and error text are always told to stay exact and unabridged
+regardless of level. Like project memory, the block is wrapped in markers
+(`<!-- ooChat:caveman-style:start/end -->`) and injected via
+`modules/style.py:inject_style_block`, which strips any previously-injected
+block before re-adding the current level's text — safe to call repeatedly
+without duplication. The same `/system` limitation as project memory
+applies: replacing the system prompt wholesale drops the style block until
+the next `/caveman` call or relaunch.
 
 ## Normal Chat Flow
 
@@ -353,6 +381,7 @@ Notes:
 | `/unset` | none | `/unset <var>` | Alias for `/globals --unset`. |
 | `/remember` | none | `/remember <text>` | Append a line to the project's [memory file](#project-memory) and re-inject it into the live system prompt. |
 | `/memory` | none | `/memory [--clear]` | Show the project's memory file, or clear it after confirmation. |
+| `/caveman` | none | `/caveman [off\|lite\|full\|ultra]` | Show or set the [caveman-style](#caveman-style-mode) response mode. |
 
 ## Tools
 
@@ -572,6 +601,7 @@ Place a `.json` file in one of the skill search paths:
 | --- | --- |
 | `commands/attach.py` | `/attach` |
 | `commands/buffer.py` | `/buffer` |
+| `commands/caveman.py` | `/caveman` |
 | `commands/clear.py` | `/clear` |
 | `commands/compact.py` | `/compact` |
 | `commands/export.py` | `/export` |

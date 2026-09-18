@@ -42,6 +42,7 @@ from modules.memory import inject_memory_block
 from modules.renderer import Renderer, redraw_conversation
 from modules.session import Session, resolve_session, list_sessions, SessionError
 from modules.skills import SkillRegistry, load_all_skills
+from modules.style import inject_style_block
 from modules.thinking import process_assistant_response
 from modules.utils import ensure_dir, write_text_file
 from modules.tools import (
@@ -187,6 +188,15 @@ class ChatApp:
             globals_module.GLOBALS["system_prompt"] = self.context.system_prompt = inject_memory_block(
                 globals_module.GLOBALS.get("system_prompt"),
                 globals_module.GLOBALS.get("max_memory_chars", 4096),
+            )
+
+            # Inject the caveman-mode style block (off by default, set via
+            # /caveman <level> or the `caveman_style` config key). Same
+            # idempotent strip-then-reappend pattern as inject_memory_block
+            # above, so it's always safe to call unconditionally here.
+            globals_module.GLOBALS["system_prompt"] = self.context.system_prompt = inject_style_block(
+                globals_module.GLOBALS.get("system_prompt"),
+                globals_module.GLOBALS.get("caveman_style", "off"),
             )
 
             # Determine model selection. Priority:
