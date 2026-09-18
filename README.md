@@ -104,7 +104,9 @@ Input is handled by `prompt_toolkit` with:
 - `/model <name>` model-name completion
 - `%skill` name completion
 - `PageUp` and `PageDown` to page through conversation slices in the terminal redraw view
-- persistent status line at the bottom showing the current selected model (left) and the context size in tokens and bytes (right)
+- persistent status line at the bottom showing the current selected model (left), an active-turn/running-job indicator when there's something to show (middle — omitted while idle), and the context size in tokens and bytes (right)
+
+Turn processing (the model call plus any tool calls it triggers, including `spawn_agent`) runs on a background thread so submitting a message returns control to the prompt immediately instead of blocking until the turn finishes; only one turn runs at a time (a second message while one is active is rejected with a message, not queued). The middle toolbar segment and the running-job count come from `modules/jobs.py:JobRegistry`, which composes `AgentPool`'s sub-agent runs with (future) Gauntlet Loop rounds into one view — see `/agents` for the full run list.
 
 ## Configuration
 
@@ -140,8 +142,6 @@ Only keys present in `modules/globals.py` defaults are loaded from config files.
 | `subagent_timeout` | `300` | Wall-clock budget in seconds per sub-agent run. `0` or `null` disables the timeout. |
 | `model_tiers` | `{"fast": null, "balanced": null, "smart": null}` | Named model tiers a `spawn_agent` call can request via its `tier` arg instead of a literal model name. An unset tier has no effect — there is no auto-classification; the calling model must ask for a tier explicitly, and an unconfigured or unknown tier falls back to the default model. |
 | `max_memory_chars` | `4096` | Max characters of `./.ooChat/memory.md` injected into the system prompt (see [Project Memory](#project-memory)). Older entries are truncated first. |
-| `rtk_enabled` | `false` | Transparently rewrite simple, allow-listed `run_shell` commands to run through [rtk](#rtk-aware-run_shell) for token savings. |
-| `rtk_allowed_commands` | `["git"]` | Leading command tokens eligible for rtk rewriting when `rtk_enabled` is true. |
 
 Example:
 
@@ -169,9 +169,7 @@ Example:
     "balanced": "openai/gpt-oss-20b",
     "smart": "openai/gpt-oss-120b"
   },
-  "max_memory_chars": 4096,
-  "rtk_enabled": false,
-  "rtk_allowed_commands": ["git"]
+  "max_memory_chars": 4096
 }
 ```
 
@@ -408,39 +406,8 @@ Tool guardrails apply to both model-triggered and manual (`/run`) tool calls:
 | `git_status` | read-only | `git status` |
 | `list_directory` | read-only | `ls -la {path}` |
 | `read_file` | read-only | Python helper that reads a file path from JSON stdin |
-| `run_shell` | destructive | Python helper that runs a shell command from JSON stdin (see [rtk-aware run_shell](#rtk-aware-run_shell)) |
+| `run_shell` | destructive | Python helper that runs a shell command from JSON stdin |
 | `write_file` | destructive | Python helper that writes text content from JSON stdin |
-
-### rtk-aware run_shell
-
-When `rtk` (a token-optimized CLI proxy, invoked by name on `PATH`) is
-installed and `rtk_enabled` is `true`, `tools/run_shell.py` transparently rewrites a
-command to run through it (`git status` -> `rtk git status`) before
-execution — invisible to the model, which only ever sees `command` in its
-tool call and the raw output back. A command is only rewritten when *all*
-of these hold:
-
-- `rtk_enabled` is `true` (default `false`).
-- The command has no shell compounding: no pipes, `&&`/`||`/`;`/`&`
-  chains, redirection, subshells (`$(...)`/`` ` ``), or newlines. Any of
-  these means the rewrite is skipped and the command runs raw — this check
-  is intentionally conservative and can false-positive on a marker
-  character that's actually inside quotes (e.g. `git commit -m "a | b"`),
-  skipping a safe rewrite rather than risk an unsafe one.
-- The command isn't already an `rtk` invocation.
-- Its leading token (e.g. `git`) is in `rtk_allowed_commands` (default
-  `["git"]`).
-- The `rtk` binary is actually on `PATH`.
-
-Anything that fails one of these checks — including `rtk_enabled` being
-`false` — passes through unchanged, exactly like today. Config is read
-fresh per invocation from the layered global/local `.ooChat/config.json`
-files (`tools/run_shell.py:load_rtk_config`), the same precedence used
-everywhere else — not from the live in-session `GLOBALS`, since each
-`run_shell` call is a separate subprocess with no access to the running
-session's state. A runtime `/set rtk_enabled true` therefore only takes
-effect for `run_shell` once persisted to a config file the tool reads, not
-for the rest of the current session.
 
 ## Skills
 
@@ -600,6 +567,7 @@ Place a `.json` file in one of the skill search paths:
 | `modules/skills.py` | JSON skill registry, template interpolation, discovery/loading. |
 | `modules/utils.py` | Paths, file IO, session ID generation, text checks, timestamps. |
 | `modules/filters.py` | Generic filter/hook helpers; applied in the main chat flow (global filters run before command-registry filters). |
+| `modules/jobs.py` | `JobRegistry` — unified background-job view (gauntlet rounds + `AgentPool` runs) for the bottom toolbar and completion notifications. |
 
 ### Shipped Command Files
 
