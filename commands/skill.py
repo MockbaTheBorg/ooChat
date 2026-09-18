@@ -13,10 +13,17 @@ Usage
   %<name> <prompt>        Shortcut form
 """
 
+import json
+
 from modules.api import APIError, send_chat
 from modules.context import Context
 from modules.skills import interpolate_template
 from modules.thinking import process_assistant_response
+from modules.tools import (
+    build_tool_followup_message,
+    canonicalize_tool_call,
+    execute_tool,
+)
 from modules.utils import format_table
 
 
@@ -125,7 +132,12 @@ def register(chat):
                 "context": None,
             }
 
+        tools = chat.tools.get_tool_schemas() if chat.GLOBALS.get("enable_tools") else None
+        max_iterations = chat.GLOBALS.get("max_tool_iterations", 25)
+
         response_text = ""
+        display_text = ""
+        context_text = ""
         try:
             # Respect per-skill display_format by temporarily overriding
             # the renderer mode (restore after rendering).
@@ -133,17 +145,95 @@ def register(chat):
             # All skill display formats render as markdown in the new flow
             chat.renderer.set_mode('markdown')
 
-            chat.renderer.start_response()
-            for chunk in send_chat(model, messages, stream=True):
-                content = chunk.get("content", "")
-                if content:
-                    chat.renderer.stream_chunk(content)
-                    response_text += content
+            auto_approve = False
+            iterations = 0
+            while True:
+                response_text = ""
+                tool_calls = []
 
-            display_text, context_text, _ = process_assistant_response(
-                response_text, include_blocks=True
-            )
-            chat.renderer.end_response(display_text)
+                chat.renderer.start_response()
+                for chunk in send_chat(model, messages, stream=True, tools=tools):
+                    content = chunk.get("content", "")
+                    if content:
+                        chat.renderer.stream_chunk(content)
+                        response_text += content
+
+                    if chunk.get("tool_calls"):
+                        tool_calls.extend(chunk["tool_calls"])
+
+                display_text, context_text, _ = process_assistant_response(
+                    response_text, include_blocks=True
+                )
+
+                if not tool_calls:
+                    chat.renderer.end_response(display_text)
+                    break
+
+                chat.renderer.end_response(display_text)
+
+                iterations += 1
+                if iterations > max_iterations:
+                    print(f"\nSkill '{name}' hit max_tool_iterations ({max_iterations}); stopping.")
+                    break
+
+                tool_calls = [canonicalize_tool_call(chat.tools, call) for call in tool_calls]
+                messages.append({
+                    "role": "assistant",
+                    "content": context_text,
+                    "tool_calls": tool_calls,
+                })
+
+                aborted = False
+                for call in tool_calls:
+                    tool_name = call.get("function", {}).get("name")
+                    tool_args_str = call.get("function", {}).get("arguments", "{}")
+                    call_id = call.get("id", "unknown")
+
+                    try:
+                        tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
+                    except json.JSONDecodeError:
+                        tool_args = {}
+
+                    tool = chat.tools.get(tool_name)
+                    if not tool:
+                        print(f"\nUnknown tool: {tool_name}")
+                        aborted = True
+                        break
+
+                    allowed, reason = chat.tools.is_allowed(tool_name)
+                    if not allowed:
+                        print(f"\nTool blocked by guardrails: {reason}")
+                        aborted = True
+                        break
+
+                    if reason == "NEEDS_CONFIRMATION" and not auto_approve:
+                        try:
+                            preview = json.dumps(tool_args, ensure_ascii=False, indent=2)
+                        except Exception:
+                            preview = str(tool_args)
+                        print(f"\nPlanned execution: {tool_name}({preview})")
+                        confirm = input(f"\nTool '{tool_name}' may modify state. Proceed? [y/a/N]: ").strip().lower()
+                        if confirm == 'a':
+                            auto_approve = True
+                        if confirm not in ('y', 'a'):
+                            print(f"\nTool execution cancelled by user: {tool_name}")
+                            aborted = True
+                            break
+
+                    print(f"\nExecuting: {tool_name}({tool_args})")
+                    result = execute_tool(tool, tool_args)
+                    followup_message = build_tool_followup_message(tool_name, tool, result)
+                    if result.get("error") and followup_message is not None:
+                        followup_message = f"{followup_message}\n\n(error: {result['error']})"
+                    messages.append({
+                        "role": "tool",
+                        "content": followup_message or "",
+                        "tool_call_id": call_id,
+                    })
+
+                if aborted:
+                    break
+
             # Restore original renderer mode
             try:
                 chat.renderer.set_mode(orig_mode)
