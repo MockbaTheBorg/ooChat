@@ -97,6 +97,31 @@ class _SafeConsoleFile:
 # Spinner sequence (single string so it can be easily modified)
 SPINNER_SEQUENCE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
+
+def set_terminal_title(title: str) -> None:
+    """Set the terminal/tab window title via the OSC 2 escape sequence.
+
+    Written directly to `sys.__stdout__` (the real, original stdout),
+    bypassing `patch_stdout`'s proxy entirely -- unlike visible text, a
+    title-setting sequence never occupies screen space or moves the
+    cursor, so it can't corrupt a live input line the way a raw color
+    escape can (see `_SafeConsoleFile`'s docstring above); patch_stdout's
+    virtual screen model never needs to see or interpret these bytes,
+    so this is safe to call from any thread, unlike printing visible
+    text. No-op if stdout isn't a real terminal (piped output, tests,
+    etc.) or the write fails for any reason.
+    """
+    try:
+        if not (sys.__stdout__ and sys.__stdout__.isatty()):
+            return
+        # Strip control characters defensively (title text should never
+        # contain a raw ESC/BEL, e.g. from an unusual directory name).
+        safe_title = "".join(ch for ch in title if ch.isprintable())
+        sys.__stdout__.write(f"\x1b]2;{safe_title}\x07")
+        sys.__stdout__.flush()
+    except Exception:
+        pass
+
 # Event set when the user interrupts a spinning operation (ESC pressed)
 _spinner_interrupted: threading.Event = threading.Event()
 _spinner_interrupt_callback: Optional[Callable[[], None]] = None
