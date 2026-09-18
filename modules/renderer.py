@@ -502,7 +502,26 @@ class Renderer:
                 pass
 
     def _start_spinner(self) -> None:
-        """Start the spinner thread (no-op if already running)."""
+        """Start the spinner thread (no-op if already running, or if not
+        called from the main thread).
+
+        Since T16, a turn's model call (and thus this) can run on the
+        background turn-worker thread while the main thread is inside an
+        *active* `session.prompt()` (patch_stdout proxies `sys.stdout`
+        process-wide for as long as that's open). The spinner animates by
+        writing raw, newline-less `\r<char> ` fragments straight to
+        `sys.stdout` — fine when nothing else owns the terminal, but not
+        the complete/newline-terminated writes prompt_toolkit's
+        `StdoutProxy` is built to buffer and flush safely. Racing the two
+        produces visible flicker and a misplaced prompt line. Skipping the
+        animation off the main thread avoids the race entirely; the
+        toolbar's "active turn" indicator (see modules/jobs.py) already
+        covers user feedback for that case. This mirrors the guard
+        `_enter_spinner_input_mode` already applies to the spinner's
+        stdin-reading half, for the same underlying reason.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            return
         if self._spinner_thread and self._spinner_thread.is_alive():
             return
         self._spinner_stop = threading.Event()
