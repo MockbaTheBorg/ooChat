@@ -224,7 +224,13 @@ class AgentPool:
         except APIError as e:
             result = {"output": "", "error": str(e), "exit_code": 1}
         except Exception as e:
-            result = {"output": "", "error": str(e), "exit_code": 1}
+            # Tag with the exception class: an unexpected type here (not
+            # AgentCancelled/AgentTimedOut/APIError) means something is
+            # failing outside the normal send_chat/APIError contract --
+            # worth distinguishing in /agents output and session
+            # transcripts rather than looking identical to a normal
+            # upstream error.
+            result = {"output": "", "error": f"{type(e).__name__}: {e}", "exit_code": 1}
 
         self._finish(agent_id, result, status_override=status_override)
         return result
