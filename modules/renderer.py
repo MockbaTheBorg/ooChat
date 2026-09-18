@@ -165,6 +165,32 @@ def set_spinner_interrupt_callback(callback: Optional[Callable[[], None]]) -> No
     _spinner_interrupt_callback = callback
 
 
+def set_spinner_interrupt() -> None:
+    """Mark the in-flight response as interrupted and fire the registered
+    interrupt callback, the same way the spinner's own raw-stdin ESC
+    detection does (see `_spinner_loop`).
+
+    `_spinner_loop`'s own ESC detection only runs when the spinner was
+    started on the main thread; since turn processing now normally runs
+    on a background worker thread, that path is skipped (see
+    `_start_spinner`'s docstring) and `spinner_was_interrupted()` never
+    gets set on its own. `request_cancel()` calls this directly so a
+    streaming request blocked on a slow/hung network read is closed
+    immediately (via the callback, e.g. `send_chat`'s
+    `_close_active_response`) instead of only being noticed at the next
+    chunk boundary -- which, for a truly stuck read, is never.
+    """
+    try:
+        _spinner_interrupted.set()
+    except Exception:
+        pass
+    try:
+        if callable(_spinner_interrupt_callback):
+            _spinner_interrupt_callback()
+    except Exception:
+        pass
+
+
 def _enter_spinner_input_mode() -> bool:
     """Put stdin into cbreak mode for ESC detection.
 

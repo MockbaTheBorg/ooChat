@@ -326,9 +326,13 @@ class ChatApp:
         turn-worker thread checks at chunk/tool-call boundaries, and
         cancels any `spawn_agent` runs that turn started (their own
         cancellation is likewise cooperative -- see `AgentPool.cancel`).
-        Does not forcibly kill anything already in flight (a single
-        model request or tool subprocess already running completes on
-        its own).
+        Also closes an in-flight streaming HTTP request immediately (via
+        `renderer.set_spinner_interrupt()`) rather than waiting for it to
+        next yield a chunk or time out on its own -- a hung/slow network
+        read otherwise wouldn't notice `_turn_cancel_event` until it next
+        yields, which for a truly stuck read is never. A tool subprocess
+        already running still completes on its own (bounded by
+        `tool_timeout`); this doesn't forcibly kill it.
 
         If a tool confirmation is currently pending, resolves it as
         declined ("n") first -- found via T27's UI/concurrency review:
@@ -356,6 +360,11 @@ class ChatApp:
         # Esc had registered at all.
         print("\nCancelling...\n")
         self._turn_cancel_event.set()
+        try:
+            from modules import renderer as renderer_module
+            renderer_module.set_spinner_interrupt()
+        except Exception:
+            pass
         if self._pending_confirmation is not None:
             self._confirmation_answer = "n"
             self._confirmation_event.set()
