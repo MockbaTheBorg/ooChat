@@ -37,7 +37,7 @@ DEFAULTS = {
     # stack-specific build tools (npm/cargo/docker/etc.), which a project
     # can add itself via `rtk_allowed_commands` in .ooChat/config.json.
     'rtk_allowed_commands': ['git', 'gh', 'find', 'grep', 'rg', 'ls', 'tree', 'wc', 'diff', 'curl', 'wget'],
-    'gauntlet_max_rounds': 8,  # cap on builder/critic rounds for /gauntlet before giving up
+    'forge_max_rounds': 8,  # cap on builder/verifier rounds for /forge before giving up
 }
 
 # Runtime GLOBALS dictionary (initialized with defaults, updated by config/CLI)

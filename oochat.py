@@ -22,6 +22,7 @@ import os
 import signal
 import sys
 import threading
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -33,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from modules import globals as globals_module
 from modules import config as config_module
 from modules.agents import AgentPool, SPAWN_AGENT_TOOL_NAME, build_spawn_agent_tool, spawn_kwargs_from_tool_args
-from modules.api import APIClient, send_chat, APIError
+from modules.api import APIClient, send_chat, APIError, model_is_known
 from modules.buffer import AttachmentBuffer
 from modules.commands import CommandRegistry, load_all_commands
 from modules.context import Context
@@ -75,8 +76,9 @@ class ChatApp:
         self.session: Optional[Session] = None
         self.input_handler: Optional[InputHandler] = None
         self.agent_pool: Optional[AgentPool] = None
-        # Unified background-job view (gauntlet rounds + AgentPool sub-agent
-        # runs) for the bottom toolbar and completion notifications.
+        # Unified background-job view (round-loop jobs like /forge +
+        # AgentPool sub-agent runs) for the bottom toolbar and completion
+        # notifications.
         self.jobs = JobRegistry()
         self.GLOBALS = globals_module.GLOBALS
         self._quit_requested = False
@@ -140,6 +142,12 @@ class ChatApp:
         load_all_tools(self.tools, extra_tools)
         load_all_skills(self.skills, extra_skills)
 
+        # Pre-fetch and cache models list. Done before constructing
+        # AgentPool below so it can validate a sub-agent's requested
+        # model against it up front (see AgentPool's `known_models`).
+        client = APIClient()
+        self._cached_models = client.list_models()
+
         # Register the spawn_agent native tool, backed by a bounded thread
         # pool of headless sub-agents (see modules/agents.py). Registered
         # after load_all_tools so it isn't shadowed by a JSON tool file
@@ -148,13 +156,10 @@ class ChatApp:
         # _notify_agent_finished) -- safe to do from the sub-agent's own
         # worker thread since get_input() wraps session.prompt() in
         # patch_stdout() (T16), so this can't corrupt a live input line.
-        self.agent_pool = AgentPool(tools=self.tools, on_finish=self._on_agent_finish)
+        self.agent_pool = AgentPool(tools=self.tools, on_finish=self._on_agent_finish,
+                                    known_models=self._cached_models)
         spawn_tool_def, spawn_agent_fn = build_spawn_agent_tool(self.agent_pool)
         self.tools.register_native(spawn_tool_def, spawn_agent_fn)
-
-        # Pre-fetch and cache models list
-        client = APIClient()
-        self._cached_models = client.list_models()
 
         # Resolve session
         try:
@@ -243,23 +248,9 @@ class ChatApp:
 
             # Validate chosen model against the pulled model list (if available).
             # If the model is not present in the API's model list, warn and unset.
-            if chosen_model and getattr(self, '_cached_models', None):
-                model_valid = False
-                for m in self._cached_models:
-                    if isinstance(m, str) and m == chosen_model:
-                        model_valid = True
-                        break
-                    if isinstance(m, dict):
-                        # match common keys/values like 'name' or 'id'
-                        for v in m.values():
-                            if isinstance(v, str) and v == chosen_model:
-                                model_valid = True
-                                break
-                        if model_valid:
-                            break
-                if not model_valid:
-                    print(f"Warning: model '{chosen_model}' not found on the API. Unsetting current model.")
-                    chosen_model = None
+            if chosen_model and getattr(self, '_cached_models', None) and not model_is_known(chosen_model, self._cached_models):
+                print(f"Warning: model '{chosen_model}' not found on the API. Unsetting current model.")
+                chosen_model = None
 
             globals_module.GLOBALS['model'] = chosen_model
 
@@ -733,6 +724,17 @@ class ChatApp:
                 # otherwise vanish silently on a background thread instead
                 # of surfacing like it would have on the main thread.
                 print(f"\nError while processing turn: {e}")
+                # Best-effort: an exception reaching this generic handler
+                # is by definition unanticipated -- leave a traceback on
+                # disk so a live occurrence that's hard to reproduce can
+                # be diagnosed from the session directory afterward,
+                # rather than only from this one-line message.
+                try:
+                    if self.session and getattr(self.session, 'session_dir', None):
+                        log_path = Path(self.session.session_dir) / "last_error.log"
+                        log_path.write_text(traceback.format_exc())
+                except Exception:
+                    pass
 
     def _tui_on_submit(self, text: str, ui=None) -> None:
         """Callback used by ChatUI when user submits text.
