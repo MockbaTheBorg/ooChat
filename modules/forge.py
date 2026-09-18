@@ -159,6 +159,28 @@ def run_forge(
 
         final_output = builder_output
 
+        # A builder that made no tool calls only described or pasted code
+        # rather than actually writing/running anything -- there's nothing
+        # real for a verifier to check yet, so skip straight to a retry
+        # with stronger feedback instead of wasting a verifier round on it.
+        if builder_result.get("tool_calls_made", 0) == 0:
+            entry = {
+                "round": round_num,
+                "passed": False,
+                "note": "builder made no tool calls -- skipped verification, retrying",
+            }
+            verdicts.append(entry)
+            if on_round is not None:
+                _safe_on_round(on_round, dict(entry))
+            prior_feedback = (
+                "Your previous attempt made no tool calls -- you only "
+                "described or pasted code without actually writing or "
+                "running anything. You MUST use your available tools "
+                "(e.g. write a file, then run it) to produce a real, "
+                "checkable result. A prose description is not acceptable."
+            )
+            continue
+
         verifier_task = _build_verifier_task(goal, builder_output)
         verifier_result = pool.spawn(
             task=verifier_task, model=verifier_model, context_mode="fresh"
@@ -170,6 +192,17 @@ def run_forge(
             break
 
         passed = _parse_verdict(verifier_output)
+
+        # A PASS the verifier never actually checked (no tool calls of its
+        # own) is just as untrustworthy as the builder's unverified claim
+        # would have been -- don't let it through.
+        if passed and verifier_result.get("tool_calls_made", 0) == 0:
+            passed = False
+            verifier_output += (
+                "\n\n[forge: this PASS was not trusted -- the verifier made "
+                "no tool calls, so it never actually checked anything.]"
+            )
+
         entry = {"round": round_num, "passed": bool(passed), "verifier_reasoning": verifier_output}
         verdicts.append(entry)
 

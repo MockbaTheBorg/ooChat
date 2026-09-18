@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import blacklist
 from . import globals as globals_module
@@ -233,11 +233,14 @@ class AgentPool:
 
         status_override = None
         try:
-            output_text = self._drive_turn(
+            output_text, tool_calls_made = self._drive_turn(
                 ctx, effective_model, tool_schemas,
                 cancel_event=cancel_event, deadline=deadline,
             )
-            result = {"output": output_text, "error": None, "exit_code": 0}
+            result = {
+                "output": output_text, "error": None, "exit_code": 0,
+                "tool_calls_made": tool_calls_made,
+            }
         except AgentCancelled:
             result = {"output": "", "error": "cancelled", "exit_code": 1}
             status_override = "cancelled"
@@ -278,7 +281,7 @@ class AgentPool:
     def _drive_turn(self, ctx: Context, model: str,
                     tool_schemas: Optional[List[Dict[str, Any]]],
                     cancel_event: Optional[threading.Event] = None,
-                    deadline: Optional[float] = None) -> str:
+                    deadline: Optional[float] = None) -> Tuple[str, int]:
         """Headless model<->tool loop for a single sub-agent run.
 
         Never touches `modules.renderer` (not thread-safe) and never
@@ -286,9 +289,18 @@ class AgentPool:
         refused rather than run unattended. Raises `AgentCancelled` or
         `AgentTimedOut` if `cancel_event`/`deadline` trip between
         iterations (checked at each iteration boundary, not mid-request).
+
+        Returns:
+            `(display_text, tool_calls_made)` — the total number of tool
+            calls the model actually issued across every iteration of
+            this run, regardless of whether they succeeded. Callers that
+            need to know whether a sub-agent *did* anything beyond
+            talking (e.g. `modules.forge`'s builder/verifier rounds) use
+            this instead of trying to infer it from the response text.
         """
         max_iterations = globals_module.GLOBALS.get('max_subagent_iterations', 25)
         iteration = 0
+        tool_calls_made = 0
 
         while True:
             iteration += 1
@@ -297,7 +309,7 @@ class AgentPool:
             if deadline is not None and time.time() > deadline:
                 raise AgentTimedOut()
             if iteration > max_iterations:
-                return f"[sub-agent stopped: exceeded max_subagent_iterations ({max_iterations})]"
+                return f"[sub-agent stopped: exceeded max_subagent_iterations ({max_iterations})]", tool_calls_made
 
             response_text = ""
             tool_calls: List[Dict[str, Any]] = []
@@ -315,12 +327,13 @@ class AgentPool:
 
             if not tool_calls:
                 ctx.add_assistant(context_text)
-                return display_text
+                return display_text, tool_calls_made
 
+            tool_calls_made += len(tool_calls)
             ctx.add_assistant(context_text, tool_calls=tool_calls)
 
             if self.tools is None:
-                return display_text or "[sub-agent requested tools but none are available]"
+                return display_text or "[sub-agent requested tools but none are available]", tool_calls_made
 
             for call in tool_calls:
                 self._run_one_tool_call(ctx, call)

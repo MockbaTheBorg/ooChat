@@ -258,7 +258,7 @@ def register(chat):
         handler=skill_handler,
         shortcut="%",
         description="Invoke a skill prompt template",
-        usage="/skill [name [prompt]]  or  %name [prompt]",
+        usage="[name [prompt]]  or  %name [prompt]",
         long_help=(
             "Loads and invokes JSON skill templates from the `skills/` directory.\n\n"
             "**Usage:**\n"

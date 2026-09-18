@@ -29,6 +29,26 @@ import threading
 from modules.forge import run_forge
 
 
+def _record_in_context(chat, goal, summary_text):
+    """Record the forge run's outcome as a normal (non-local) turn in the
+    live conversation, so a later question like "where's the script?"
+    has something to go on -- the run happens entirely outside the
+    normal turn flow (it's a command, not a model tool call), so nothing
+    else adds it to context. Best-effort: this runs on the forge
+    background thread, potentially concurrently with an unrelated
+    foreground turn also mutating context -- same accepted risk as the
+    background completion prints elsewhere (T42), not something this
+    fixes; failure here must never crash the forge thread.
+    """
+    try:
+        chat.context.add_user(f"/forge {goal}")
+        chat.context.add_assistant(summary_text.strip())
+        if getattr(chat, "session", None):
+            chat.session.save()
+    except Exception:
+        pass
+
+
 def _format_forge_result(job_id, goal, result):
     """Final pass/fail report text, printed once the background run finishes."""
     if result.passed:
@@ -82,6 +102,9 @@ def register(chat):
             if entry.get("error"):
                 print(f"[forge {job_id}] round {round_num}: error — {entry['error']}")
                 return
+            if entry.get("note"):
+                print(f"[forge {job_id}] round {round_num}: {entry['note']}.")
+                return
             verdict = "PASS" if entry.get("passed") else "FAIL"
             print(f"[forge {job_id}] round {round_num}: verifier said {verdict}.")
 
@@ -89,10 +112,14 @@ def register(chat):
             try:
                 result = run_forge(pool, goal, on_round=on_round)
                 chat.jobs.finish_job(job_id, "done" if result.passed else "error")
-                print(_format_forge_result(job_id, goal, result))
+                summary = _format_forge_result(job_id, goal, result)
+                print(summary)
+                _record_in_context(chat, goal, summary)
             except Exception as e:
                 chat.jobs.finish_job(job_id, "error")
-                print(f"\n[forge {job_id}] crashed: {e}\n")
+                crash_text = f"\n[forge {job_id}] crashed: {e}\n"
+                print(crash_text)
+                _record_in_context(chat, goal, crash_text)
 
         threading.Thread(
             target=run_in_background, daemon=True, name=f"ooChat-forge-{job_id}",
@@ -113,7 +140,7 @@ def register(chat):
         name="/forge",
         handler=forge_handler,
         description="Build and independently verify an attempt at a goal until it works",
-        usage="/forge <goal>",
+        usage="<goal>",
         long_help=(
             "Iteratively build and verify an attempt at a goal:\n\n"
             "1. A builder sub-agent implements the goal for real, using its "
