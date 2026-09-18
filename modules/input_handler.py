@@ -17,6 +17,7 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from . import globals as globals_module
 
@@ -305,7 +306,15 @@ class InputHandler:
             # Provide a bottom toolbar that shows the current model on the
             # left and an approximate context size (tokens and bytes) on the
             # right. The toolbar is updated each time the prompt is rendered.
-            text = self.session.prompt(prompt, bottom_toolbar=self._bottom_toolbar)
+            #
+            # patch_stdout makes any concurrent write to stdout (e.g. a
+            # background turn-worker thread streaming a response or
+            # printing a job-completion notice) redraw safely above the
+            # live input line instead of corrupting it. Wrapping just this
+            # call is prompt_toolkit's documented pattern -- it only needs
+            # to be active while a prompt is actually being edited.
+            with patch_stdout():
+                text = self.session.prompt(prompt, bottom_toolbar=self._bottom_toolbar)
             # Preserve pasted newlines and leading/trailing whitespace so
             # multi-line pastes are not trimmed by the application.
             return text

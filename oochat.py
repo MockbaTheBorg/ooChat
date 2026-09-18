@@ -21,6 +21,7 @@ import json
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -42,7 +43,6 @@ from modules.memory import inject_memory_block
 from modules.renderer import Renderer, redraw_conversation
 from modules.session import Session, resolve_session, list_sessions, SessionError
 from modules.skills import SkillRegistry, load_all_skills
-from modules.style import inject_style_block
 from modules.thinking import process_assistant_response
 from modules.utils import ensure_dir, write_text_file
 from modules.tools import (
@@ -77,6 +77,13 @@ class ChatApp:
         self._quit_requested = False
         self._running = False
         self._draw_session_on_start = False
+        # Turn-worker state: a chat turn's model call + tool-call handling
+        # runs on a background thread so the input loop regains control
+        # immediately after submit, instead of blocking until the model
+        # (and any spawn_agent sub-agents it triggers) finish. Single-flight
+        # via the lock -- only one turn may be in progress at a time.
+        self._turn_lock = threading.Lock()
+        self._turn_thread: Optional[threading.Thread] = None
 
     def initialize(self, args) -> None:
         """Initialize the application with parsed arguments.
@@ -190,15 +197,6 @@ class ChatApp:
                 globals_module.GLOBALS.get("max_memory_chars", 4096),
             )
 
-            # Inject the caveman-mode style block (off by default, set via
-            # /caveman <level> or the `caveman_style` config key). Same
-            # idempotent strip-then-reappend pattern as inject_memory_block
-            # above, so it's always safe to call unconditionally here.
-            globals_module.GLOBALS["system_prompt"] = self.context.system_prompt = inject_style_block(
-                globals_module.GLOBALS.get("system_prompt"),
-                globals_module.GLOBALS.get("caveman_style", "off"),
-            )
-
             # Determine model selection. Priority:
             # 1. CLI arg (args.model)
             # 2. If resuming, inherit session's recorded model
@@ -261,6 +259,28 @@ class ChatApp:
         self.registry.add_command(name=name, handler=handler,
                                   shortcut=shortcut, description=description,
                                   usage=usage, long_help=long_help)
+
+    def is_turn_active(self) -> bool:
+        """Whether a chat turn (model call + any tool calls it triggers)
+        is currently running on the background turn-worker thread."""
+        return self._turn_lock.locked()
+
+    def wait_for_turn(self, timeout: Optional[float] = None) -> bool:
+        """Block until the current turn (if any) finishes.
+
+        Primarily for tests that exercise `_chat_turn`/`_process_prompt`
+        and then need to assert on their effects synchronously, since
+        turn processing itself now runs on a background thread.
+
+        Returns:
+            True if there was no turn running, or it finished within
+            `timeout`; False on timeout.
+        """
+        thread = self._turn_thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
 
     def run(self) -> None:
         """Run the main chat loop."""
@@ -392,93 +412,131 @@ class ChatApp:
                 redraw_conversation(self.context.get_flattened_messages(), self.renderer, session_id=self.session.session_id if self.session else None)
             return
 
-        # Normal message - process through pre-filters
-        prompt = self.filters.apply_pre_send(text)
-        prompt = self.registry.apply_pre_filters(prompt)
-
-        # Add attachments
-        if self.buffer.has_attachments():
-            prompt = self.buffer.pop_and_prepend(prompt)
-
-        # If no model is selected yet, notify the user and don't send.
-        model = self.GLOBALS.get('model')
-        if not model:
-            print("\nNo model selected. Use /model to select a model before sending prompts.")
+        # Normal message. Turn processing (model call + any tool calls it
+        # triggers, including spawn_agent) runs on a background thread so
+        # this method returns immediately and the input loop can prompt
+        # again right away instead of blocking until the turn finishes.
+        # Single-flight: reject a new message while one is already running
+        # rather than queueing it, to keep ordering/atomicity simple for
+        # v1 -- /agents and other read-only meta-commands still work
+        # normally during an active turn since command dispatch above this
+        # point never touches the turn lock.
+        if self.is_turn_active():
+            print(
+                "\nA turn is already in progress -- wait for it to finish "
+                "before sending another message. Use /agents to check on "
+                "any sub-agent runs it started.\n"
+            )
             return
 
-        # Add user message to context
-        self.context.add_user(prompt)
+        self._turn_thread = threading.Thread(
+            target=self._process_prompt, args=(text,),
+            daemon=True, name="ooChat-turn",
+        )
+        self._turn_thread.start()
 
-        # Send to model
-        tools = self.tools.get_tool_schemas() if self.GLOBALS.get('enable_tools') else None
-        max_tokens = self.GLOBALS.get('default_max_tokens')
+    def _process_prompt(self, text: str) -> None:
+        """Process one submitted user message: pre-filters, the model call
+        (streamed), and any tool calls it triggers.
 
-        response_text = ""
-        tool_calls = []
-
-        try:
-            # Clear any prior spinner interrupt state before starting
+        Runs on the turn-worker thread started by `_chat_turn`, holding
+        `_turn_lock` for its entire duration so `is_turn_active()` and the
+        single-flight check in `_chat_turn` stay accurate.
+        """
+        with self._turn_lock:
             try:
-                from modules import renderer as renderer_module
-                renderer_module.clear_spinner_interrupt()
-            except Exception:
-                pass
+                # Process through pre-filters
+                prompt = self.filters.apply_pre_send(text)
+                prompt = self.registry.apply_pre_filters(prompt)
 
-            self.renderer.start_response()
+                # Add attachments
+                if self.buffer.has_attachments():
+                    prompt = self.buffer.pop_and_prepend(prompt)
 
-            for chunk in send_chat(model, self.context.get_remote_messages(),
-                                   stream=True, tools=tools, max_tokens=max_tokens):
-                content = chunk.get("content", "")
-                if content:
-                    self.renderer.stream_chunk(content)
-                    response_text += content
-
-                if chunk.get("tool_calls"):
-                    tool_calls.extend(chunk["tool_calls"])
-
-            # If the user interrupted the spinner (ESC), abort the request
-            try:
-                from modules import renderer as renderer_module
-                if renderer_module.spinner_was_interrupted():
-                    self.renderer._stop_spinner()
-                    renderer_module.print_interrupt_message()
-                    self.context.discard_current_interaction()
+                # If no model is selected yet, notify the user and don't send.
+                model = self.GLOBALS.get('model')
+                if not model:
+                    print("\nNo model selected. Use /model to select a model before sending prompts.")
                     return
-            except Exception:
-                pass
 
-            # Process thinking blocks first so thinking is shown before response
-            display_text, context_text, thinking_blocks = process_assistant_response(response_text, include_blocks=True)
+                # Add user message to context
+                self.context.add_user(prompt)
 
-            # Handle tool calls (before adding to context – the intermediate
-            # assistant message that triggered tools is not persisted)
-            if tool_calls:
-                self.renderer.end_response(display_text)
-                self._handle_tool_calls(
-                    tool_calls,
-                    assistant_content=context_text,
-                    tools=tools,
-                    max_tokens=max_tokens,
-                )
-                return
+                # Send to model
+                tools = self.tools.get_tool_schemas() if self.GLOBALS.get('enable_tools') else None
+                max_tokens = self.GLOBALS.get('default_max_tokens')
 
-            # No tool calls: persist the response then render with a full
-            # conversation redraw so final markdown replaces streamed artifacts.
-            self.context.add_assistant(context_text)
+                response_text = ""
+                tool_calls = []
 
-            # Render the (possibly filtered) display content
-            self.renderer.end_response(display_text, self.context.get_flattened_messages(), session_id=self.session.session_id if self.session else None)
+                try:
+                    # Clear any prior spinner interrupt state before starting
+                    try:
+                        from modules import renderer as renderer_module
+                        renderer_module.clear_spinner_interrupt()
+                    except Exception:
+                        pass
 
-            # Apply post-filters (command registry then global filters)
-            post_text = self.registry.apply_post_filters(context_text)
-            _ = self.filters.apply_post_receive(post_text)
+                    self.renderer.start_response()
 
-            # Save session
-            self.session.save()
+                    for chunk in send_chat(model, self.context.get_remote_messages(),
+                                           stream=True, tools=tools, max_tokens=max_tokens):
+                        content = chunk.get("content", "")
+                        if content:
+                            self.renderer.stream_chunk(content)
+                            response_text += content
 
-        except APIError as e:
-            print(f"\nAPI error: {e}")
-            self.context.discard_current_interaction()
+                        if chunk.get("tool_calls"):
+                            tool_calls.extend(chunk["tool_calls"])
+
+                    # If the user interrupted the spinner (ESC), abort the request
+                    try:
+                        from modules import renderer as renderer_module
+                        if renderer_module.spinner_was_interrupted():
+                            self.renderer._stop_spinner()
+                            renderer_module.print_interrupt_message()
+                            self.context.discard_current_interaction()
+                            return
+                    except Exception:
+                        pass
+
+                    # Process thinking blocks first so thinking is shown before response
+                    display_text, context_text, thinking_blocks = process_assistant_response(response_text, include_blocks=True)
+
+                    # Handle tool calls (before adding to context – the intermediate
+                    # assistant message that triggered tools is not persisted)
+                    if tool_calls:
+                        self.renderer.end_response(display_text)
+                        self._handle_tool_calls(
+                            tool_calls,
+                            assistant_content=context_text,
+                            tools=tools,
+                            max_tokens=max_tokens,
+                        )
+                        return
+
+                    # No tool calls: persist the response then render with a full
+                    # conversation redraw so final markdown replaces streamed artifacts.
+                    self.context.add_assistant(context_text)
+
+                    # Render the (possibly filtered) display content
+                    self.renderer.end_response(display_text, self.context.get_flattened_messages(), session_id=self.session.session_id if self.session else None)
+
+                    # Apply post-filters (command registry then global filters)
+                    post_text = self.registry.apply_post_filters(context_text)
+                    _ = self.filters.apply_post_receive(post_text)
+
+                    # Save session
+                    self.session.save()
+
+                except APIError as e:
+                    print(f"\nAPI error: {e}")
+                    self.context.discard_current_interaction()
+            except Exception as e:
+                # Top-level safety net: an unhandled exception here would
+                # otherwise vanish silently on a background thread instead
+                # of surfacing like it would have on the main thread.
+                print(f"\nError while processing turn: {e}")
 
     def _tui_on_submit(self, text: str, ui=None) -> None:
         """Callback used by ChatUI when user submits text.
@@ -989,7 +1047,20 @@ class ChatApp:
             return {"output": "", "error": str(e)}
 
     def _save_and_exit(self) -> None:
-        """Save session and exit."""
+        """Save session and exit.
+
+        If a turn is still running on the background worker thread (e.g.
+        the user hit Ctrl+C mid-turn), briefly wait for it rather than
+        saving while it's still mutating context/session concurrently --
+        real data-corruption risk, not just cosmetic. Bounded so exit
+        never hangs indefinitely on a slow/stuck turn (a clean mid-turn
+        cancel is T17's job); after the timeout, save proceeds anyway and
+        says so.
+        """
+        if self.is_turn_active():
+            print("\nWaiting briefly for the in-progress turn to finish before saving...")
+            if not self.wait_for_turn(timeout=5):
+                print("Turn still running after 5s; saving session as-is.")
         try:
             from modules import renderer as renderer_module
             renderer_module.restore_terminal_mode()

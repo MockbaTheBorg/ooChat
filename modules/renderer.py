@@ -75,8 +75,21 @@ def _enter_spinner_input_mode() -> bool:
     """Put stdin into cbreak mode for ESC detection.
 
     Returns True when this call changed the terminal mode.
+
+    Only ever does this from the main thread. Turn processing (model +
+    tool calls, including any spinner it starts) now runs on a background
+    worker thread (see oochat.py's turn-worker), while the main thread
+    owns stdin continuously via prompt_toolkit's PromptSession. Two
+    concurrent readers of the same stdin fd — this spinner's raw os.read
+    loop and prompt_toolkit's own input handling — would race for
+    keystrokes and fight over termios state. Skipping raw-mode stdin
+    reads off the main thread makes the spinner visual-only (stdout
+    writes are still safe) in that case; ESC-based cancellation is
+    superseded by a main-thread key binding instead (see T17).
     """
     global _terminal_mode_fd, _terminal_mode_attrs
+    if threading.current_thread() is not threading.main_thread():
+        return False
     try:
         if not sys.stdin.isatty():
             return False
