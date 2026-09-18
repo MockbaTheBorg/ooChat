@@ -73,9 +73,18 @@ class CommandCompleter(Completer):
         """
         text = document.text_before_cursor
 
-        # Handle /model <model_name> autocomplete
-        if text.startswith('/model '):
-            model_prefix = text[7:]  # After "/model "
+        # Handle model-name autocomplete for every command that takes a
+        # model-name argument the same way /model does (currently /model
+        # itself and /blacklist, which reuses /model's numbering/name
+        # conventions -- see commands/blacklist.py).
+        for command_prefix in ('/model ', '/blacklist '):
+            if not text.startswith(command_prefix):
+                continue
+            model_prefix = text[len(command_prefix):]
+            # /blacklist --local <name> -- complete the name after the flag,
+            # not the flag itself.
+            if command_prefix == '/blacklist ' and model_prefix.startswith('--local '):
+                model_prefix = model_prefix[len('--local '):]
             for model in self.models:
                 name = model.get("name") or model.get("id", "")
                 if name.startswith(model_prefix):
@@ -347,6 +356,14 @@ class InputHandler:
             multiline=self.multiline,
             mouse_support=self.mouse_support,
             prompt_continuation='... ',
+            # Without this, the bottom toolbar (turn-active/job-count,
+            # confirmation-pending hint) only redraws on a keypress --
+            # background state (a turn finishing, a job completing, a
+            # confirmation becoming pending) can sit stale on screen for
+            # as long as the user's hands are off the keyboard, e.g.
+            # mid-thought during multiline input. 0.5s keeps it feeling
+            # live without meaningfully increasing render/CPU cost.
+            refresh_interval=0.5,
         )
 
     def get_input(self, prompt: str = ">>> ") -> str:
