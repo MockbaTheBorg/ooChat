@@ -8,9 +8,10 @@ registering multiple commands from one module:
 - `/set <var> <value>` — alias for `/globals --set <var> <value>`.
 - `/unset <var>` — alias for `/globals --unset <var>`.
 
-Variable names must be alphanumeric and start with a letter. Values
-support quoted or unquoted strings (spaces allowed); numeric and
-boolean literals will be parsed when possible.
+Variable names must start with a letter and contain only letters,
+digits, and underscores. Values support quoted or unquoted strings
+(spaces allowed); numeric and boolean literals will be parsed when
+possible.
 """
 
 from modules import globals as globals_module
@@ -22,7 +23,7 @@ import re
 def register(chat):
     """Register `/globals`, `/set` and `/unset` commands."""
 
-    VAR_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
+    VAR_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
     def _is_valid_var(name: str) -> bool:
         return bool(VAR_RE.match(name))
@@ -49,7 +50,7 @@ def register(chat):
 
     def _apply_set(chat, var: str, value) -> dict:
         if not _is_valid_var(var):
-            return {"display": "Invalid variable name. Must start with a letter and be alphanumeric.\n", "context": None}
+            return {"display": "Invalid variable name. Must start with a letter and contain only letters, digits, and underscores.\n", "context": None}
 
         # If var is a known default key, use the provided setter which
         # enforces known keys; otherwise add it as a runtime-only global.
@@ -78,7 +79,7 @@ def register(chat):
 
     def _apply_unset(chat, var: str) -> dict:
         if not _is_valid_var(var):
-            return {"display": "Invalid variable name. Must start with a letter and be alphanumeric.\n", "context": None}
+            return {"display": "Invalid variable name. Must start with a letter and contain only letters, digits, and underscores.\n", "context": None}
 
         # Known default: revert to default value
         if var in globals_module.DEFAULTS:
