@@ -99,7 +99,7 @@ def register(chat):
             }
 
         # ── Interpolate templates ─────────────────────────────────────────────
-        prompt = interpolate_template(skill.prompt_template, input_text)
+        request = interpolate_template(skill.prompt_template, input_text)
         system = (
             interpolate_template(skill.system_prompt, input_text)
             if skill.system_prompt else None
@@ -109,7 +109,7 @@ def register(chat):
         if skill.context_mode == "fresh":
             # Isolated context; optionally seeded with skill's system prompt
             temp_ctx = Context(system_prompt=system)
-            temp_ctx.add_user(prompt)
+            temp_ctx.add_user(request)
             messages = temp_ctx.get_remote_messages()
 
         elif skill.context_mode == "inject_system" and system:
@@ -117,18 +117,18 @@ def register(chat):
             existing = chat.context.get_remote_messages()
             non_system = [m for m in existing if m["role"] != "system"]
             messages = [{"role": "system", "content": system}] + non_system
-            messages.append({"role": "user", "content": prompt})
+            messages.append({"role": "user", "content": request})
 
         else:
             # inherit: use conversation history as-is (remote only), append user turn
             messages = list(chat.context.get_remote_messages())
-            messages.append({"role": "user", "content": prompt})
+            messages.append({"role": "user", "content": request})
 
         # ── Call the model (streaming) ────────────────────────────────────────
         model = chat.GLOBALS.get("model")
         if not model:
             return {
-                "display": "No model selected. Use /model to select a model before sending prompts.\n",
+                "display": "No model selected. Use /model to select a model before sending requests.\n",
                 "context": None,
             }
 
@@ -246,7 +246,7 @@ def register(chat):
 
         # ── Persist to context if requested ──────────────────────────────────
         if skill.include_in_context:
-            chat.context.add_user(prompt)
+            chat.context.add_user(request)
             chat.context.add_assistant(context_text)
             chat.session.save()
 

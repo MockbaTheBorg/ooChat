@@ -144,6 +144,10 @@ Only keys present in `modules/globals.py` defaults are loaded from config files.
 | `subagent_timeout` | `300` | Wall-clock budget in seconds per sub-agent run. `0` or `null` disables the timeout. |
 | `model_tiers` | `{"fast": null, "balanced": null, "smart": null}` | Named model tiers a `spawn_agent` call can request via its `tier` arg instead of a literal model name. An unset tier has no effect — there is no auto-classification; the calling model must ask for a tier explicitly, and an unconfigured or unknown tier falls back to the default model. |
 | `max_memory_chars` | `4096` | Max characters of `./.ooChat/memory.md` injected into the system prompt (see [Project Memory](#project-memory)). Older entries are truncated first. |
+| `caveman_style` | `off` | Response style level injected into the system prompt: `off`, `lite`, `full`, or `ultra` (see [Caveman Style Mode](#caveman-style-mode)). |
+| `rtk_enabled` | `false` | Transparently rewrite simple, allow-listed `run_shell` commands to run through [rtk](#rtk-aware-run_shell) for token savings. |
+| `rtk_allowed_commands` | `["git"]` | Leading command tokens eligible for rtk rewriting when `rtk_enabled` is true. |
+| `gauntlet_max_rounds` | `8` | Cap on builder/critic rounds for `/gauntlet` (see [Gauntlet Loop](#gauntlet-loop)) before giving up without a win. |
 
 Example:
 
@@ -171,7 +175,11 @@ Example:
     "balanced": "openai/gpt-oss-20b",
     "smart": "openai/gpt-oss-120b"
   },
-  "max_memory_chars": 4096
+  "max_memory_chars": 4096,
+  "caveman_style": "off",
+  "rtk_enabled": false,
+  "rtk_allowed_commands": ["git"],
+  "gauntlet_max_rounds": 8
 }
 ```
 
@@ -243,9 +251,51 @@ On every session launch — and after each `/remember` — the file's content is
 
 **Known limitation:** `/system <text>`, `/system --reset`, and `/system --clear` replace `context.system_prompt` wholesale, which drops the injected memory block along with it until the next `/remember` or relaunch re-adds it. Not solved in this version.
 
+## Caveman Style Mode
+
+A runtime-only response-style switch, unlike project memory there is no file
+storage — just a `caveman_style` global (`off` by default) and a fixed
+instruction string per level, injected into the system prompt the same way:
+
+- `/caveman` with no argument shows the current level.
+- `/caveman <off|lite|full|ultra>` sets the level and immediately re-injects
+  the style block into the live system prompt.
+
+| Level | Effect |
+| --- | --- |
+| `off` | No style instruction added (default). |
+| `lite` | Terse: drops filler/hedging, keeps full sentences. |
+| `full` | Caveman fragments: also drops articles, short words over long ones. |
+| `ultra` | Fewest words possible, one line per point where possible. |
+
+Code, commands, and error text are always told to stay exact and unabridged
+regardless of level. Like project memory, the block is wrapped in markers
+(`<!-- ooChat:caveman-style:start/end -->`) and injected via
+`modules/style.py:inject_style_block`, which strips any previously-injected
+block before re-adding the current level's text — safe to call repeatedly
+without duplication. The same `/system` limitation as project memory
+applies: replacing the system prompt wholesale drops the style block until
+the next `/caveman` call or relaunch.
+
+## Gauntlet Loop
+
+An iterative builder/critic refinement loop, adapted from [robonuggets/gauntlet-loop](https://github.com/robonuggets/gauntlet-loop):
+
+```text
+/gauntlet <goal>
+```
+
+1. **Quality bar.** The model proposes 2-3 concrete reference standards for the goal — each must be a real, existing file path or URL, not an abstract description. Pick one, or supply your own reference. The chosen bar is fetched immediately (via `read_file` or `web_scrape`) and gate-checked; an unfetchable choice is rejected and you're re-prompted.
+2. **Builder/critic rounds (backgrounded).** Once the bar is confirmed, the rounds run on their own background thread — the prompt returns immediately with a job id, and you can keep using ooChat while it runs. A builder sub-agent attempts the goal; a critic sub-agent does a *blind* comparison between the builder's attempt and the bar — labeled "Candidate 1"/"Candidate 2" in a randomized order each round, so the critic never knows which is which. The critic ends its answer with `VERDICT: 1` or `VERDICT: 2`. Progress and the final result print live as they happen (`[gauntlet <id>] round N: ...`), and the run shows up in the toolbar's job count (`modules/jobs.py:JobRegistry`) alongside any `spawn_agent` runs.
+3. **Loop or stop.** If the builder's attempt wins, the loop stops and returns it. Otherwise the critic's reasoning is fed back to the builder for the next attempt, up to `gauntlet_max_rounds` (default 8).
+
+Both roles run as isolated sub-agents on the same shared `AgentPool` that backs `spawn_agent`/`/agents` (`modules/gauntlet.py:run_gauntlet`) — each with its own fresh context, no access to the parent conversation or to each other's reasoning. `/agents kill <id>` on the round's current sub-agent cancels the whole gauntlet early — `run_gauntlet` treats a cancelled sub-agent as a terminal error for the run.
+
+**Adaptation from the original design:** the original spec's "single fresh-session prompt" hop (for pasting into a brand-new terminal) is skipped — ooChat already drives isolated sub-agents directly via `spawn_agent`, so that intermediate request is built internally instead of shown to the user. The critic also never "screenshots" anything — ooChat's model interface is text/tool-call only, so the bar is fetched once as text and compared as text.
+
 ## Normal Chat Flow
 
-For a normal prompt, `oochat.py` currently does this:
+For a normal request, `oochat.py` currently does this:
 
 1. Applies global pre-filters (`FilterRegistry`) then command-registry pre-filters.
 2. Prepends any buffered attachments, then clears the buffer.
@@ -285,8 +335,8 @@ Behavior:
 - only text files are accepted
 - text is read as UTF-8
 - each attached file is wrapped with a simple header/footer marker
-- all attached content is prepended to the next normal prompt
-- after that prompt is sent, the buffer is cleared automatically
+- all attached content is prepended to the next normal request
+- after that request is sent, the buffer is cleared automatically
 - `/buffer` previews buffered content
 - `/clear` discards it after confirmation
 
@@ -357,6 +407,8 @@ Notes:
 | `/unset` | none | `/unset <var>` | Alias for `/globals --unset`. |
 | `/remember` | none | `/remember <text>` | Append a line to the project's [memory file](#project-memory) and re-inject it into the live system prompt. |
 | `/memory` | none | `/memory [--clear]` | Show the project's memory file, or clear it after confirmation. |
+| `/caveman` | none | `/caveman [off\|lite\|full\|ultra]` | Show or set the [caveman-style](#caveman-style-mode) response mode. |
+| `/gauntlet` | none | `/gauntlet <goal>` | Run a builder/critic [Gauntlet Loop](#gauntlet-loop) against a quality bar until it wins or rounds run out. |
 
 ## Tools
 
@@ -408,8 +460,39 @@ Tool guardrails apply to both model-triggered and manual (`/run`) tool calls:
 | `git_status` | read-only | `git status` |
 | `list_directory` | read-only | `ls -la {path}` |
 | `read_file` | read-only | Python helper that reads a file path from JSON stdin |
-| `run_shell` | destructive | Python helper that runs a shell command from JSON stdin |
+| `run_shell` | destructive | Python helper that runs a shell command from JSON stdin (see [rtk-aware run_shell](#rtk-aware-run_shell)) |
 | `write_file` | destructive | Python helper that writes text content from JSON stdin |
+
+### rtk-aware run_shell
+
+When `rtk` (a token-optimized CLI proxy, invoked by name on `PATH`) is
+installed and `rtk_enabled` is `true`, `tools/run_shell.py` transparently rewrites a
+command to run through it (`git status` -> `rtk git status`) before
+execution — invisible to the model, which only ever sees `command` in its
+tool call and the raw output back. A command is only rewritten when *all*
+of these hold:
+
+- `rtk_enabled` is `true` (default `false`).
+- The command has no shell compounding: no pipes, `&&`/`||`/`;`/`&`
+  chains, redirection, subshells (`$(...)`/`` ` ``), or newlines. Any of
+  these means the rewrite is skipped and the command runs raw — this check
+  is intentionally conservative and can false-positive on a marker
+  character that's actually inside quotes (e.g. `git commit -m "a | b"`),
+  skipping a safe rewrite rather than risk an unsafe one.
+- The command isn't already an `rtk` invocation.
+- Its leading token (e.g. `git`) is in `rtk_allowed_commands` (default
+  `["git"]`).
+- The `rtk` binary is actually on `PATH`.
+
+Anything that fails one of these checks — including `rtk_enabled` being
+`false` — passes through unchanged, exactly like today. Config is read
+fresh per invocation from the layered global/local `.ooChat/config.json`
+files (`tools/run_shell.py:load_rtk_config`), the same precedence used
+everywhere else — not from the live in-session `GLOBALS`, since each
+`run_shell` call is a separate subprocess with no access to the running
+session's state. A runtime `/set rtk_enabled true` therefore only takes
+effect for `run_shell` once persisted to a config file the tool reads, not
+for the rest of the current session.
 
 ## Skills
 
@@ -569,6 +652,9 @@ Place a `.json` file in one of the skill search paths:
 | `modules/skills.py` | JSON skill registry, template interpolation, discovery/loading. |
 | `modules/utils.py` | Paths, file IO, session ID generation, text checks, timestamps. |
 | `modules/filters.py` | Generic filter/hook helpers; applied in the main chat flow (global filters run before command-registry filters). |
+| `modules/agents.py` | `AgentPool` sub-agent orchestration, `spawn_agent` tool, model-tier resolution. |
+| `modules/memory.py` | Project memory file I/O, idempotent system-prompt injection. |
+| `modules/gauntlet.py` | Gauntlet Loop builder/critic round loop (`run_gauntlet`). |
 | `modules/jobs.py` | `JobRegistry` — unified background-job view (gauntlet rounds + `AgentPool` runs) for the bottom toolbar and completion notifications. |
 
 ### Shipped Command Files
@@ -577,6 +663,7 @@ Place a `.json` file in one of the skill search paths:
 | --- | --- |
 | `commands/attach.py` | `/attach` |
 | `commands/buffer.py` | `/buffer` |
+| `commands/caveman.py` | `/caveman` |
 | `commands/clear.py` | `/clear` |
 | `commands/compact.py` | `/compact` |
 | `commands/export.py` | `/export` |
@@ -593,6 +680,9 @@ Place a `.json` file in one of the skill search paths:
 | `commands/system.py` | `/system` |
 | `commands/think.py` | `/think` |
 | `commands/tools.py` | `/tools` |
+| `commands/agents.py` | `/agents` |
+| `commands/memory.py` | `/remember`, `/memory` |
+| `commands/gauntlet.py` | `/gauntlet` |
 
 ## Known Behavior Notes
 

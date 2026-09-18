@@ -1,7 +1,7 @@
 """Local send command for ooChat.
 
-Command: /local <prompt>
-Description: Send a prompt but mark the entire interaction as local.
+Command: /local <request>
+Description: Send a request but mark the entire interaction as local.
 
 This executes the normal send flow but stores the interaction as `local` so
 it will not be included in future model context (unless promoted).
@@ -13,31 +13,31 @@ from modules.thinking import process_assistant_response
 
 def register(chat):
     def local_handler(chat, args):
-        prompt = (args or "").strip()
-        if not prompt:
-            return {"display": "Usage: /local <prompt>\n", "context": None}
+        request = (args or "").strip()
+        if not request:
+            return {"display": "Usage: /local <request>\n", "context": None}
 
         # Record history
         try:
-            chat.session.add_history(f"/local {prompt}")
+            chat.session.add_history(f"/local {request}")
         except Exception:
             pass
 
         # Apply filters
-        prompt = chat.filters.apply_pre_send(prompt)
-        prompt = chat.registry.apply_pre_filters(prompt)
+        request = chat.filters.apply_pre_send(request)
+        request = chat.registry.apply_pre_filters(request)
 
         # Attachments
         if chat.buffer.has_attachments():
-            prompt = chat.buffer.pop_and_prepend(prompt)
+            request = chat.buffer.pop_and_prepend(request)
 
         # Model check
         model = chat.GLOBALS.get('model')
         if not model:
-            return {"display": "No model selected. Use /model to select a model before sending prompts.", "context": None}
+            return {"display": "No model selected. Use /model to select a model before sending requests.", "context": None}
 
         # Add user message as local interaction
-        chat.context.add_user(prompt, local=True)
+        chat.context.add_user(request, local=True)
 
         tools = chat.tools.get_tool_schemas() if chat.GLOBALS.get('enable_tools') else None
         max_tokens = chat.GLOBALS.get('default_max_tokens')
@@ -92,10 +92,10 @@ def register(chat):
     chat.add_command(
         name="/local",
         handler=local_handler,
-        description="Send a prompt as a local interaction",
-        usage="<prompt>",
+        description="Send a request as a local interaction",
+        usage="<request>",
         long_help=(
             "Marks the entire interaction as local so it will not be included in "
-            "future model context. Useful for ephemeral or private prompts."
+            "future model context. Useful for ephemeral or private requests."
         ),
     )

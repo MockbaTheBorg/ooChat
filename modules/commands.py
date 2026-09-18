@@ -174,7 +174,7 @@ class CommandRegistry:
         """Add a pre-send filter.
 
         Args:
-            func: Filter function that takes and returns prompt string.
+            func: Filter function that takes and returns the request string.
         """
         self._pre_filters.append(func)
 
@@ -186,21 +186,21 @@ class CommandRegistry:
         """
         self._post_filters.append(func)
 
-    def apply_pre_filters(self, prompt: str) -> str:
-        """Apply all pre-send filters to a prompt.
+    def apply_pre_filters(self, request: str) -> str:
+        """Apply all pre-send filters to a request.
 
         Args:
-            prompt: Original prompt.
+            request: Original request.
 
         Returns:
-            Filtered prompt.
+            Filtered request.
         """
         for func in self._pre_filters:
             try:
-                prompt = func(prompt)
+                request = func(request)
             except Exception as e:
                 print(f"Warning: Pre-filter failed: {e}")
-        return prompt
+        return request
 
     def apply_post_filters(self, text: str) -> str:
         """Apply all post-receive filters to response text.

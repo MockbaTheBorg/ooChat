@@ -301,7 +301,7 @@ class ChatApp:
     def wait_for_turn(self, timeout: Optional[float] = None) -> bool:
         """Block until the current turn (if any) finishes.
 
-        Primarily for tests that exercise `_chat_turn`/`_process_prompt`
+        Primarily for tests that exercise `_chat_turn`/`_process_request`
         and then need to assert on their effects synchronously, since
         turn processing itself now runs on a background thread.
 
@@ -507,7 +507,7 @@ class ChatApp:
         # on the background worker thread, so the very next call here can
         # happen while that turn is still in flight -- context.add_user()
         # (which is what actually advances next_id) runs right at the
-        # start of _process_prompt, well before the model call finishes,
+        # start of _process_request, well before the model call finishes,
         # so without this guard the header for interaction N+1 prints
         # before interaction N's response has even rendered, making the
         # response appear to trail the wrong header. Skipping it here
@@ -594,7 +594,7 @@ class ChatApp:
             return
 
         self._turn_thread = threading.Thread(
-            target=self._process_prompt, args=(text,),
+            target=self._process_request, args=(text,),
             daemon=True, name="ooChat-turn",
         )
         self._turn_thread.start()
@@ -617,7 +617,7 @@ class ChatApp:
         self._confirmation_answer = answer
         self._confirmation_event.set()
 
-    def _process_prompt(self, text: str) -> None:
+    def _process_request(self, text: str) -> None:
         """Process one submitted user message: pre-filters, the model call
         (streamed), and any tool calls it triggers.
 
@@ -628,21 +628,21 @@ class ChatApp:
         with self._turn_lock:
             try:
                 # Process through pre-filters
-                prompt = self.filters.apply_pre_send(text)
-                prompt = self.registry.apply_pre_filters(prompt)
+                request = self.filters.apply_pre_send(text)
+                request = self.registry.apply_pre_filters(request)
 
                 # Add attachments
                 if self.buffer.has_attachments():
-                    prompt = self.buffer.pop_and_prepend(prompt)
+                    request = self.buffer.pop_and_prepend(request)
 
                 # If no model is selected yet, notify the user and don't send.
                 model = self.GLOBALS.get('model')
                 if not model:
-                    print("\nNo model selected. Use /model to select a model before sending prompts.")
+                    print("\nNo model selected. Use /model to select a model before sending requests.")
                     return
 
                 # Add user message to context
-                self.context.add_user(prompt)
+                self.context.add_user(request)
 
                 # Send to model
                 tools = self.tools.get_tool_schemas() if self.GLOBALS.get('enable_tools') else None
@@ -760,23 +760,23 @@ class ChatApp:
             return
 
         # Normal message flow (apply global then command filters)
-        prompt = self.filters.apply_pre_send(text)
-        prompt = self.registry.apply_pre_filters(prompt)
+        request = self.filters.apply_pre_send(text)
+        request = self.registry.apply_pre_filters(request)
 
         # Attachments
         if self.buffer.has_attachments():
-            prompt = self.buffer.pop_and_prepend(prompt)
+            request = self.buffer.pop_and_prepend(request)
 
-        # If no model is selected yet, notify and don't send the prompt.
+        # If no model is selected yet, notify and don't send the request.
         model = self.GLOBALS.get('model')
         if not model:
             if ui:
-                ui.append_assistant("No model selected. Use /model to select a model before sending prompts.")
+                ui.append_assistant("No model selected. Use /model to select a model before sending requests.")
             else:
-                print("\nNo model selected. Use /model to select a model before sending prompts.")
+                print("\nNo model selected. Use /model to select a model before sending requests.")
             return
 
-        self.context.add_user(prompt)
+        self.context.add_user(request)
 
         tools = self.tools.get_tool_schemas() if self.GLOBALS.get('enable_tools') else None
         max_tokens = self.GLOBALS.get('default_max_tokens')
