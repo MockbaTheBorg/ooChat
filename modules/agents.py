@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import globals as globals_module
 from .api import APIError, send_chat
@@ -32,7 +32,8 @@ SPAWN_AGENT_TOOL_NAME = "spawn_agent"
 class AgentPool:
     """Bounded thread pool for running sub-agent turns concurrently."""
 
-    def __init__(self, tools: Optional[ToolRegistry] = None, max_workers: Optional[int] = None):
+    def __init__(self, tools: Optional[ToolRegistry] = None, max_workers: Optional[int] = None,
+                on_finish: Optional[Callable[[Dict[str, Any]], None]] = None):
         """Initialize the pool.
 
         Args:
@@ -41,6 +42,13 @@ class AgentPool:
                 `spawn_agent` itself. None disables tool use in sub-agents.
             max_workers: Concurrent sub-agent cap. Defaults to
                 GLOBALS['max_subagents'] (20) if not given.
+            on_finish: Optional callback invoked with a snapshot dict of
+                the run (same shape as `get_run()`) whenever a sub-agent
+                finishes (status "done" or "error"). Called from the
+                sub-agent's own worker thread — must not touch anything
+                not thread-safe (e.g. the interactive renderer); a
+                filesystem write keyed by the run's own id is safe.
+                Exceptions raised by the callback are swallowed.
         """
         self.tools = tools
         self._max_workers = max_workers or globals_module.GLOBALS.get('max_subagents', 20)
@@ -49,6 +57,7 @@ class AgentPool:
         )
         self._lock = threading.Lock()
         self._runs: Dict[str, Dict[str, Any]] = {}
+        self._on_finish = on_finish
 
     def spawn(self, task: str, model: Optional[str] = None,
              allowed_tools: Optional[List[str]] = None,
@@ -231,34 +240,22 @@ class AgentPool:
                 run["status"] = "error" if result.get("error") else "done"
                 run["finished_at"] = time.time()
                 run["result"] = result
+                snapshot = dict(run)
+            else:
+                snapshot = None
 
-
-def resolve_tier_model(tier: str) -> Optional[str]:
-    """Resolve a named tier (e.g. "fast") to a configured model name.
-
-    Reads `GLOBALS['model_tiers']`. Returns None if the tier is unknown or
-    not configured — callers fall back to the parent's default model, no
-    auto-classification substitutes a different tier.
-    """
-    model_tiers = globals_module.GLOBALS.get("model_tiers") or {}
-    return model_tiers.get(tier) or None
+        if snapshot is not None and self._on_finish is not None:
+            try:
+                self._on_finish(snapshot)
+            except Exception:
+                pass
 
 
 def spawn_kwargs_from_tool_args(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract `AgentPool.spawn()` kwargs from a `spawn_agent` tool call's arguments.
-
-    An explicit `model` always wins. Otherwise, a `tier` is resolved via
-    `resolve_tier_model`; if that tier isn't configured, `model` stays
-    None and `AgentPool.spawn` falls back to `GLOBALS['model']`.
-    """
-    model = args.get("model") or None
-    if not model:
-        tier = args.get("tier")
-        if tier:
-            model = resolve_tier_model(tier)
+    """Extract `AgentPool.spawn()` kwargs from a `spawn_agent` tool call's arguments."""
     return {
         "task": args.get("task", ""),
-        "model": model,
+        "model": args.get("model") or None,
         "allowed_tools": args.get("tools") or None,
     }
 
@@ -297,16 +294,7 @@ def build_spawn_agent_tool(pool: AgentPool):
                 },
                 "model": {
                     "type": "string",
-                    "description": "Optional model override for this sub-agent. Defaults to the current model. Takes precedence over 'tier' if both are given.",
-                },
-                "tier": {
-                    "type": "string",
-                    "description": (
-                        "Optional named model tier for this sub-agent (e.g. 'fast', "
-                        "'balanced', 'smart'), resolved via the configured "
-                        "model_tiers mapping. Ignored if 'model' is also given. "
-                        "If the tier isn't configured, falls back to the current model."
-                    ),
+                    "description": "Optional model override for this sub-agent. Defaults to the current model.",
                 },
                 "tools": {
                     "type": "array",

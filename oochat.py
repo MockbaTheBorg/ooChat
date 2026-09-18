@@ -42,6 +42,7 @@ from modules.renderer import Renderer, redraw_conversation
 from modules.session import Session, resolve_session, list_sessions, SessionError
 from modules.skills import SkillRegistry, load_all_skills
 from modules.thinking import process_assistant_response
+from modules.utils import ensure_dir, write_text_file
 from modules.tools import (
     canonicalize_tool_call,
     ToolRegistry,
@@ -114,8 +115,10 @@ class ChatApp:
         # Register the spawn_agent native tool, backed by a bounded thread
         # pool of headless sub-agents (see modules/agents.py). Registered
         # after load_all_tools so it isn't shadowed by a JSON tool file
-        # reusing the same name.
-        self.agent_pool = AgentPool(tools=self.tools)
+        # reusing the same name. on_finish persists each run's transcript
+        # for audit/debugging (see _persist_agent_run); it must not print
+        # or touch the renderer since it runs on the sub-agent's thread.
+        self.agent_pool = AgentPool(tools=self.tools, on_finish=self._persist_agent_run)
         spawn_tool_def, spawn_agent_fn = build_spawn_agent_tool(self.agent_pool)
         self.tools.register_native(spawn_tool_def, spawn_agent_fn)
 
@@ -690,6 +693,20 @@ class ChatApp:
                         exec_args["_precomputed_future"] = precomputed_future
                     result = execute_tool(tool, exec_args)
 
+                    # One-line completion status for sub-agents instead of
+                    # streaming their output to the main terminal — the
+                    # parent model sees the full result via the follow-up
+                    # request; this is just a live progress signal, printed
+                    # here on the main thread (never from the sub-agent's
+                    # own worker thread).
+                    if tool_name == SPAWN_AGENT_TOOL_NAME:
+                        summary = (result.get("output") or result.get("error") or "").strip()
+                        summary = summary.splitlines()[0] if summary else ""
+                        if len(summary) > 120:
+                            summary = summary[:120] + "..."
+                        status = "error" if result.get("error") else "done"
+                        print(f"[agent {call_id}] {status}: {summary}")
+
                     if result.get("error"):
                         self._commit_turn_session_messages(turn_session_messages)
                         self._report_tool_failure(
@@ -851,6 +868,27 @@ class ChatApp:
                 print(f"\n{status_text}\n")
             except Exception:
                 pass
+
+    def _persist_agent_run(self, run: Dict) -> None:
+        """Write a finished sub-agent run's transcript to disk for audit/debugging.
+
+        Called from the sub-agent's own worker thread via
+        `AgentPool(on_finish=...)` — must stay filesystem-only (a plain
+        write to this run's own file has no shared state to race on) and
+        never touch the interactive renderer/stdout, which are not
+        thread-safe. Any live "agent finished" notice to the user happens
+        separately on the main thread, right after `_handle_tool_calls`
+        collects each spawn_agent call's result.
+        """
+        if self.session is None:
+            return
+        try:
+            subagents_dir = self.session.session_dir / "subagents"
+            ensure_dir(subagents_dir)
+            path = subagents_dir / f"{run.get('id', 'unknown')}.json"
+            write_text_file(path, json.dumps(run, indent=2, ensure_ascii=False, default=str))
+        except Exception:
+            pass
 
     def _report_tool_failure(self, tool_name: str, message: str,
                              details: str = "") -> None:
