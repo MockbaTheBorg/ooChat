@@ -31,6 +31,58 @@ except Exception:
 # Console instance for rich output
 _console = None
 
+
+class _SafeConsoleFile:
+    """File-like object the shared Rich `Console` writes to.
+
+    Rich detects color/terminal capability once, at `Console()`
+    construction, and keeps emitting full ANSI SGR codes on every
+    `.print()` after that regardless of what `sys.stdout` currently is.
+    Since T16, render calls (`render_markdown`, `render_markdown_panel`,
+    etc. — everything that goes through `get_console()`) can run on the
+    background turn-worker thread while the main thread is inside an
+    *active* `session.prompt()`; `patch_stdout()` proxies `sys.stdout`
+    process-wide for as long as that's open, and that proxy's virtual
+    screen model doesn't interpret raw ANSI escape sequences — an ESC
+    byte just shows as a literal `?`. Branch on the calling thread
+    instead of writing to `sys.stdout` unconditionally: on the main
+    thread (nothing else is ever using the terminal then — commands like
+    `/skill` run synchronously, `patch_stdout` is only open for the
+    duration of `get_input()`'s own call, which has already returned by
+    the time any of this runs), write straight through, byte-for-byte
+    what always happened. Off the main thread, hand the text to
+    `prompt_toolkit`'s own ANSI-aware print instead, which can render it
+    correctly through an active `patch_stdout` scope (and degrades
+    gracefully with no active prompt at all, so it's safe unconditionally).
+    """
+
+    def write(self, text: str) -> None:
+        if not text:
+            return
+        if threading.current_thread() is threading.main_thread():
+            try:
+                sys.stdout.write(text)
+            except Exception:
+                pass
+            return
+        try:
+            from prompt_toolkit import print_formatted_text
+            from prompt_toolkit.formatted_text import ANSI
+            print_formatted_text(ANSI(text), end="")
+        except Exception:
+            pass
+
+    def flush(self) -> None:
+        if threading.current_thread() is threading.main_thread():
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+        # prompt_toolkit's print_formatted_text flushes on its own.
+
+    def isatty(self) -> bool:
+        return True
+
 # Spinner sequence (single string so it can be easily modified)
 SPINNER_SEQUENCE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -42,10 +94,15 @@ _terminal_mode_fd: Optional[int] = None
 _terminal_mode_attrs = None
 
 def get_console():
-    """Get or create rich console instance."""
+    """Get or create rich console instance.
+
+    Uses `_SafeConsoleFile` (see class docstring) so output rendered off
+    the main thread — the only place `patch_stdout` can be concurrently
+    active — survives correctly instead of showing garbled ANSI.
+    """
     global _console
     if _console is None and RICH_AVAILABLE:
-        _console = Console()
+        _console = Console(file=_SafeConsoleFile())
     return _console
 
 
