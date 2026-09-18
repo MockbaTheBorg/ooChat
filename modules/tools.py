@@ -10,6 +10,15 @@ Tools are defined in JSON files with the following schema:
 - command OR argv: How to execute the tool
 - cwd: Optional working directory
 - timeout: Optional timeout override
+
+Tools can also be registered natively from Python (see
+`ToolRegistry.register_native`) instead of shelling out to a subprocess.
+A native tool sets `type: "native"` and is backed by a callable taking
+the (schema-defaulted) arguments dict and returning a result dict shaped
+like a subprocess result: `{"output": str, "error": str|None,
+"exit_code": int}`. `execute_tool` dispatches on `tool.get("type")` so
+callers (guardrails, `build_tool_followup_message`, etc.) don't need to
+know which kind of tool they're looking at.
 """
 
 import json
@@ -18,7 +27,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import globals as globals_module
 from .utils import get_oochat_home, get_global_config_dir, get_local_config_dir
@@ -57,6 +66,31 @@ class ToolRegistry:
             tool_def["kind"] = "remote"
 
         self._tools[name] = tool_def
+
+    def register_native(self, tool_def: Dict[str, Any],
+                        fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
+        """Register a tool backed by a Python callable instead of a subprocess.
+
+        Args:
+            tool_def: Same shape as `register()` (name/description/
+                read_only/destructive/kind/parameters). Must not itself
+                set `command` or `argv`.
+            fn: Callable receiving the schema-defaulted arguments dict and
+                returning a result dict shaped like a subprocess result:
+                `{"output": str, "error": str|None, "exit_code": int}`.
+                Called synchronously by `execute_tool`; long-running or
+                concurrent work is the callable's own responsibility.
+        """
+        name = tool_def.get("name")
+        if not name:
+            raise ToolError("Native tool definition missing 'name'")
+        if not callable(fn):
+            raise ToolError(f"Native tool '{name}' requires a callable")
+
+        tool_def = dict(tool_def)
+        tool_def["type"] = "native"
+        tool_def["_native_fn"] = fn
+        self.register(tool_def)
 
     def get(self, name: str) -> Optional[Dict[str, Any]]:
         """Get a tool definition by name.
@@ -215,6 +249,39 @@ def load_all_tools(registry: ToolRegistry, extra_files: List[Path] = None) -> No
         load_tools_file(filepath, registry)
 
 
+def _execute_native_tool(tool: Dict[str, Any], arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Run a `type: native` tool's registered callable and normalize its result.
+
+    Same output shape and truncation behavior as the subprocess path, so
+    callers of `execute_tool` don't need to branch on tool type.
+    """
+    fn = tool.get("_native_fn")
+    if not callable(fn):
+        return {
+            "output": "",
+            "error": f"Native tool '{tool.get('name')}' has no registered callable",
+            "exit_code": 1,
+        }
+
+    try:
+        result = fn(arguments)
+    except Exception as e:
+        return {"output": "", "error": str(e), "exit_code": 1}
+
+    if not isinstance(result, dict):
+        result = {"output": str(result), "error": None, "exit_code": 0}
+
+    output = str(result.get("output", ""))
+    error = result.get("error")
+    exit_code = result.get("exit_code", 1 if error else 0)
+
+    max_chars = globals_module.GLOBALS.get("max_tool_output_chars", 16384)
+    if len(output) > max_chars:
+        output = output[:max_chars] + "... (truncated)"
+
+    return {"output": output, "error": error, "exit_code": exit_code}
+
+
 def execute_tool(tool: Dict[str, Any], arguments: Dict[str, Any],
                  timeout: int = None) -> Dict[str, Any]:
     """Execute a tool.
@@ -229,6 +296,9 @@ def execute_tool(tool: Dict[str, Any], arguments: Dict[str, Any],
     """
     # Apply schema defaults before interpolation/execution.
     arguments = apply_parameter_defaults(tool, arguments)
+
+    if tool.get("type") == "native":
+        return _execute_native_tool(tool, arguments)
 
     # Get timeout
     effective_timeout = timeout or tool.get("timeout") or globals_module.GLOBALS.get("tool_timeout", 120)
