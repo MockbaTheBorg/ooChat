@@ -619,6 +619,14 @@ class ChatApp:
         except KeyboardInterrupt:
             answer = "n"
         self._confirmation_answer = answer
+        # Clear here, on the main thread, rather than leaving it to
+        # `request_confirmation()`'s worker-thread cleanup: the main
+        # loop's `_chat_turn()` re-enters immediately with no
+        # synchronization, and would otherwise see this same still-set
+        # `_pending_confirmation` before the (just-woken) worker thread
+        # gets scheduled to clear it -- re-prompting for the same tool
+        # call a second time.
+        self._pending_confirmation = None
         self._confirmation_event.set()
 
     def _process_request(self, text: str) -> None:
