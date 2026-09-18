@@ -140,7 +140,8 @@ Only keys present in `modules/globals.py` defaults are loaded from config files.
 | `subagent_timeout` | `300` | Wall-clock budget in seconds per sub-agent run. `0` or `null` disables the timeout. |
 | `model_tiers` | `{"fast": null, "balanced": null, "smart": null}` | Named model tiers a `spawn_agent` call can request via its `tier` arg instead of a literal model name. An unset tier has no effect — there is no auto-classification; the calling model must ask for a tier explicitly, and an unconfigured or unknown tier falls back to the default model. |
 | `max_memory_chars` | `4096` | Max characters of `./.ooChat/memory.md` injected into the system prompt (see [Project Memory](#project-memory)). Older entries are truncated first. |
-| `caveman_style` | `off` | Response style level injected into the system prompt: `off`, `lite`, `full`, or `ultra` (see [Caveman Style Mode](#caveman-style-mode)). |
+| `rtk_enabled` | `false` | Transparently rewrite simple, allow-listed `run_shell` commands to run through [rtk](#rtk-aware-run_shell) for token savings. |
+| `rtk_allowed_commands` | `["git"]` | Leading command tokens eligible for rtk rewriting when `rtk_enabled` is true. |
 
 Example:
 
@@ -169,7 +170,8 @@ Example:
     "smart": "openai/gpt-oss-120b"
   },
   "max_memory_chars": 4096,
-  "caveman_style": "off"
+  "rtk_enabled": false,
+  "rtk_allowed_commands": ["git"]
 }
 ```
 
@@ -240,32 +242,6 @@ It is scoped to the current project directory, like sessions and config. There i
 On every session launch — and after each `/remember` — the file's content is wrapped in `<!-- ooChat:project-memory:start/end -->` markers and appended to the system prompt (`modules/memory.py:inject_memory_block`). The injection always strips any previously-injected block first, so calling it repeatedly never duplicates content; on overflow it truncates from the *front* of the memory text (dropping the oldest entries first) down to `max_memory_chars`.
 
 **Known limitation:** `/system <text>`, `/system --reset`, and `/system --clear` replace `context.system_prompt` wholesale, which drops the injected memory block along with it until the next `/remember` or relaunch re-adds it. Not solved in this version.
-
-## Caveman Style Mode
-
-A runtime-only response-style switch, unlike project memory there is no file
-storage — just a `caveman_style` global (`off` by default) and a fixed
-instruction string per level, injected into the system prompt the same way:
-
-- `/caveman` with no argument shows the current level.
-- `/caveman <off|lite|full|ultra>` sets the level and immediately re-injects
-  the style block into the live system prompt.
-
-| Level | Effect |
-| --- | --- |
-| `off` | No style instruction added (default). |
-| `lite` | Terse: drops filler/hedging, keeps full sentences. |
-| `full` | Caveman fragments: also drops articles, short words over long ones. |
-| `ultra` | Fewest words possible, one line per point where possible. |
-
-Code, commands, and error text are always told to stay exact and unabridged
-regardless of level. Like project memory, the block is wrapped in markers
-(`<!-- ooChat:caveman-style:start/end -->`) and injected via
-`modules/style.py:inject_style_block`, which strips any previously-injected
-block before re-adding the current level's text — safe to call repeatedly
-without duplication. The same `/system` limitation as project memory
-applies: replacing the system prompt wholesale drops the style block until
-the next `/caveman` call or relaunch.
 
 ## Normal Chat Flow
 
@@ -381,7 +357,6 @@ Notes:
 | `/unset` | none | `/unset <var>` | Alias for `/globals --unset`. |
 | `/remember` | none | `/remember <text>` | Append a line to the project's [memory file](#project-memory) and re-inject it into the live system prompt. |
 | `/memory` | none | `/memory [--clear]` | Show the project's memory file, or clear it after confirmation. |
-| `/caveman` | none | `/caveman [off\|lite\|full\|ultra]` | Show or set the [caveman-style](#caveman-style-mode) response mode. |
 
 ## Tools
 
@@ -433,8 +408,39 @@ Tool guardrails apply to both model-triggered and manual (`/run`) tool calls:
 | `git_status` | read-only | `git status` |
 | `list_directory` | read-only | `ls -la {path}` |
 | `read_file` | read-only | Python helper that reads a file path from JSON stdin |
-| `run_shell` | destructive | Python helper that runs a shell command from JSON stdin |
+| `run_shell` | destructive | Python helper that runs a shell command from JSON stdin (see [rtk-aware run_shell](#rtk-aware-run_shell)) |
 | `write_file` | destructive | Python helper that writes text content from JSON stdin |
+
+### rtk-aware run_shell
+
+When `rtk` (a token-optimized CLI proxy, invoked by name on `PATH`) is
+installed and `rtk_enabled` is `true`, `tools/run_shell.py` transparently rewrites a
+command to run through it (`git status` -> `rtk git status`) before
+execution — invisible to the model, which only ever sees `command` in its
+tool call and the raw output back. A command is only rewritten when *all*
+of these hold:
+
+- `rtk_enabled` is `true` (default `false`).
+- The command has no shell compounding: no pipes, `&&`/`||`/`;`/`&`
+  chains, redirection, subshells (`$(...)`/`` ` ``), or newlines. Any of
+  these means the rewrite is skipped and the command runs raw — this check
+  is intentionally conservative and can false-positive on a marker
+  character that's actually inside quotes (e.g. `git commit -m "a | b"`),
+  skipping a safe rewrite rather than risk an unsafe one.
+- The command isn't already an `rtk` invocation.
+- Its leading token (e.g. `git`) is in `rtk_allowed_commands` (default
+  `["git"]`).
+- The `rtk` binary is actually on `PATH`.
+
+Anything that fails one of these checks — including `rtk_enabled` being
+`false` — passes through unchanged, exactly like today. Config is read
+fresh per invocation from the layered global/local `.ooChat/config.json`
+files (`tools/run_shell.py:load_rtk_config`), the same precedence used
+everywhere else — not from the live in-session `GLOBALS`, since each
+`run_shell` call is a separate subprocess with no access to the running
+session's state. A runtime `/set rtk_enabled true` therefore only takes
+effect for `run_shell` once persisted to a config file the tool reads, not
+for the rest of the current session.
 
 ## Skills
 
@@ -601,7 +607,6 @@ Place a `.json` file in one of the skill search paths:
 | --- | --- |
 | `commands/attach.py` | `/attach` |
 | `commands/buffer.py` | `/buffer` |
-| `commands/caveman.py` | `/caveman` |
 | `commands/clear.py` | `/clear` |
 | `commands/compact.py` | `/compact` |
 | `commands/export.py` | `/export` |

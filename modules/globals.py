@@ -29,7 +29,8 @@ DEFAULTS = {
     # configured; no auto-classification picks one on the caller's behalf.
     'model_tiers': {'fast': None, 'balanced': None, 'smart': None},
     'max_memory_chars': 4096,  # max chars of ./.ooChat/memory.md injected into the system prompt
-    'caveman_style': 'off',  # response style level: 'off', 'lite', 'full', 'ultra'
+    'rtk_enabled': False,  # transparently rewrite simple allow-listed run_shell commands to `rtk <cmd>`
+    'rtk_allowed_commands': ['git'],  # leading tokens eligible for rtk rewriting
 }
 
 # Runtime GLOBALS dictionary (initialized with defaults, updated by config/CLI)
