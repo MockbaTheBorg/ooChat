@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from modules import globals as globals_module
 from modules import config as config_module
+from modules.agents import AgentPool, SPAWN_AGENT_TOOL_NAME, build_spawn_agent_tool, spawn_kwargs_from_tool_args
 from modules.api import APIClient, send_chat, APIError
 from modules.buffer import AttachmentBuffer
 from modules.commands import CommandRegistry, load_all_commands
@@ -68,6 +69,7 @@ class ChatApp:
         self.renderer = Renderer()
         self.session: Optional[Session] = None
         self.input_handler: Optional[InputHandler] = None
+        self.agent_pool: Optional[AgentPool] = None
         self.GLOBALS = globals_module.GLOBALS
         self._quit_requested = False
         self._running = False
@@ -108,6 +110,14 @@ class ChatApp:
         load_all_commands(self.registry, self, extra_commands)
         load_all_tools(self.tools, extra_tools)
         load_all_skills(self.skills, extra_skills)
+
+        # Register the spawn_agent native tool, backed by a bounded thread
+        # pool of headless sub-agents (see modules/agents.py). Registered
+        # after load_all_tools so it isn't shadowed by a JSON tool file
+        # reusing the same name.
+        self.agent_pool = AgentPool(tools=self.tools)
+        spawn_tool_def, spawn_agent_fn = build_spawn_agent_tool(self.agent_pool)
+        self.tools.register_native(spawn_tool_def, spawn_agent_fn)
 
         # Pre-fetch and cache models list
         client = APIClient()
@@ -564,21 +574,8 @@ class ChatApp:
         # invocation so subsequent tool calls in the same interaction
         # are auto-approved when set.
         self._interaction_auto_approve = False
-        max_iterations = self.GLOBALS.get('max_tool_iterations', 25)
-        iteration_count = 0
         try:
             while pending_tool_calls:
-                iteration_count += 1
-                if iteration_count > max_iterations:
-                    self._commit_turn_session_messages(turn_session_messages)
-                    self._report_tool_failure(
-                        "tool_loop",
-                        f"Tool-call loop exceeded max_tool_iterations ({max_iterations}); "
-                        "stopping to avoid a runaway loop. Raise `max_tool_iterations` via "
-                        "/set if this turn genuinely needs more round-trips.",
-                    )
-                    return
-
                 pending_tool_calls = [canonicalize_tool_call(self.tools, call) for call in pending_tool_calls]
 
                 # Re-evaluate current interaction kind each loop in case it changed
@@ -606,6 +603,37 @@ class ChatApp:
                 turn_followup_messages.append(assistant_tool_call_message)
                 if batch_requires_followup:
                     turn_session_messages.append(assistant_tool_call_message)
+
+                # Pre-submit every spawn_agent call in this batch to the
+                # AgentPool up front so they run concurrently with each
+                # other, and overlap with the sequential handling of any
+                # other tool calls below, instead of running one full
+                # sub-agent turn at a time. The per-call loop below still
+                # runs guardrails/confirmation as normal for every call
+                # (including spawn_agent); this only skips a *second*
+                # redundant spawn for calls that already have a future.
+                precomputed_agent_futures = {}
+                if self.agent_pool is not None:
+                    for call in pending_tool_calls:
+                        if call.get("function", {}).get("name") != SPAWN_AGENT_TOOL_NAME:
+                            continue
+                        agent_tool = self.tools.get(SPAWN_AGENT_TOOL_NAME)
+                        if agent_tool is None:
+                            continue
+                        allowed, reason = self.tools.is_allowed(SPAWN_AGENT_TOOL_NAME)
+                        if not allowed or reason == "NEEDS_CONFIRMATION":
+                            continue
+                        args_str = call.get("function", {}).get("arguments", "{}")
+                        try:
+                            call_args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                        except json.JSONDecodeError:
+                            continue
+                        if not call_args.get("task"):
+                            continue
+                        call_id = call.get("id", "unknown")
+                        precomputed_agent_futures[call_id] = self.agent_pool.spawn(
+                            **spawn_kwargs_from_tool_args(call_args)
+                        )
 
                 local_statuses = []
 
@@ -655,7 +683,12 @@ class ChatApp:
                             return
 
                     print(f"\nExecuting: {tool_name}({tool_args})")
-                    result = execute_tool(tool, tool_args)
+                    exec_args = tool_args
+                    precomputed_future = precomputed_agent_futures.pop(call_id, None)
+                    if precomputed_future is not None:
+                        exec_args = dict(tool_args)
+                        exec_args["_precomputed_future"] = precomputed_future
+                    result = execute_tool(tool, exec_args)
 
                     if result.get("error"):
                         self._commit_turn_session_messages(turn_session_messages)

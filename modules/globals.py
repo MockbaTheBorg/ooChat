@@ -18,9 +18,9 @@ DEFAULTS = {
     'add_thinking_to_context': True,
     'max_tool_output_chars': 16384,
     'tool_timeout': 120,
-    'max_tool_iterations': 25,  # hard cap on model<->tool round-trips per turn
     'default_max_tokens': None,
     'system_prompt': None,  # Default system prompt (None = no system prompt)
+    'max_subagents': 20,  # concurrent sub-agent cap for spawn_agent's AgentPool
 }
 
 # Runtime GLOBALS dictionary (initialized with defaults, updated by config/CLI)
