@@ -81,7 +81,18 @@ class _SafeConsoleFile:
         # prompt_toolkit's print_formatted_text flushes on its own.
 
     def isatty(self) -> bool:
-        return True
+        # Reflect the *real* terminal state, not a hardcoded True -- Rich
+        # asks this to decide whether to emit color at all, and that
+        # decision must stay correct in a genuinely non-terminal context
+        # (piped output, or captured under a test runner) exactly like it
+        # was before this class existed. `sys.__stdout__` is the original
+        # stdout the interpreter started with, unaffected by patch_stdout
+        # or a test runner reassigning `sys.stdout` -- a stable read of
+        # whether this process is actually attached to a real terminal.
+        try:
+            return bool(sys.__stdout__ and sys.__stdout__.isatty())
+        except Exception:
+            return False
 
 # Spinner sequence (single string so it can be easily modified)
 SPINNER_SEQUENCE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
