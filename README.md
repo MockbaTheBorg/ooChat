@@ -139,6 +139,7 @@ Only keys present in `modules/globals.py` defaults are loaded from config files.
 | `max_subagent_iterations` | `25` | Hard cap on model↔tool round-trips per individual sub-agent run. |
 | `subagent_timeout` | `300` | Wall-clock budget in seconds per sub-agent run. `0` or `null` disables the timeout. |
 | `model_tiers` | `{"fast": null, "balanced": null, "smart": null}` | Named model tiers a `spawn_agent` call can request via its `tier` arg instead of a literal model name. An unset tier has no effect — there is no auto-classification; the calling model must ask for a tier explicitly, and an unconfigured or unknown tier falls back to the default model. |
+| `max_memory_chars` | `4096` | Max characters of `./.ooChat/memory.md` injected into the system prompt (see [Project Memory](#project-memory)). Older entries are truncated first. |
 
 Example:
 
@@ -165,7 +166,8 @@ Example:
     "fast": "openai/gpt-oss-20b",
     "balanced": "openai/gpt-oss-20b",
     "smart": "openai/gpt-oss-120b"
-  }
+  },
+  "max_memory_chars": 4096
 }
 ```
 
@@ -218,6 +220,24 @@ Session IDs are generated as:
 - `Ctrl+C` triggers save-and-exit behavior.
 - The session module supports PID lock files, and resume logic respects existing `.lock` files.
 - The current startup path does not call `acquire_lock()`, so lock creation is not actually enforced by `oochat.py` at startup today.
+
+## Project Memory
+
+A manually-curated, per-project memory file:
+
+```text
+./.ooChat/memory.md
+```
+
+It is scoped to the current project directory, like sessions and config. There is no auto-detection and no model-callable tool — the only way to write to it is `/remember`, and the model must be explicitly told (e.g. by the user) to use that command; nothing infers what's worth remembering on its own.
+
+- `/remember <text>` appends a dated line (`- YYYY-MM-DD: <text>`) to `memory.md` and immediately re-injects it into the live system prompt, so it's visible for the rest of the current session too, not just after the next launch.
+- `/memory` shows the raw file content.
+- `/memory --clear` permanently deletes the file (asks for confirmation first).
+
+On every session launch — and after each `/remember` — the file's content is wrapped in `<!-- ooChat:project-memory:start/end -->` markers and appended to the system prompt (`modules/memory.py:inject_memory_block`). The injection always strips any previously-injected block first, so calling it repeatedly never duplicates content; on overflow it truncates from the *front* of the memory text (dropping the oldest entries first) down to `max_memory_chars`.
+
+**Known limitation:** `/system <text>`, `/system --reset`, and `/system --clear` replace `context.system_prompt` wholesale, which drops the injected memory block along with it until the next `/remember` or relaunch re-adds it. Not solved in this version.
 
 ## Normal Chat Flow
 
@@ -331,6 +351,8 @@ Notes:
 | `/globals` | none | `/globals [--set VAR VALUE \| --unset VAR]` | Inspect or mutate runtime globals. |
 | `/set` | none | `/set <var> <value>` | Alias for `/globals --set`. |
 | `/unset` | none | `/unset <var>` | Alias for `/globals --unset`. |
+| `/remember` | none | `/remember <text>` | Append a line to the project's [memory file](#project-memory) and re-inject it into the live system prompt. |
+| `/memory` | none | `/memory [--clear]` | Show the project's memory file, or clear it after confirmation. |
 
 ## Tools
 

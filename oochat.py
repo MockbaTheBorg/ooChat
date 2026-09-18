@@ -38,6 +38,7 @@ from modules.commands import CommandRegistry, load_all_commands
 from modules.context import Context
 from modules.filters import FilterRegistry
 from modules.input_handler import InputHandler, create_input_handler
+from modules.memory import inject_memory_block
 from modules.renderer import Renderer, redraw_conversation
 from modules.session import Session, resolve_session, list_sessions, SessionError
 from modules.skills import SkillRegistry, load_all_skills
@@ -177,6 +178,16 @@ class ChatApp:
                 if configured_system and not self.context.system_prompt:
                     self.context.add_system(configured_system)
                     self.context.system_prompt = configured_system
+
+            # Inject the project memory file (./.ooChat/memory.md, if any)
+            # into the system prompt. Idempotent: strips any block from a
+            # previous launch (e.g. persisted in a resumed session's
+            # context.json) before re-adding the current file content, so
+            # this is always safe to call once here, unconditionally.
+            globals_module.GLOBALS["system_prompt"] = self.context.system_prompt = inject_memory_block(
+                globals_module.GLOBALS.get("system_prompt"),
+                globals_module.GLOBALS.get("max_memory_chars", 4096),
+            )
 
             # Determine model selection. Priority:
             # 1. CLI arg (args.model)
@@ -577,8 +588,21 @@ class ChatApp:
         # invocation so subsequent tool calls in the same interaction
         # are auto-approved when set.
         self._interaction_auto_approve = False
+        max_iterations = self.GLOBALS.get('max_tool_iterations', 25)
+        iteration_count = 0
         try:
             while pending_tool_calls:
+                iteration_count += 1
+                if iteration_count > max_iterations:
+                    self._commit_turn_session_messages(turn_session_messages)
+                    self._report_tool_failure(
+                        "tool_loop",
+                        f"Tool-call loop exceeded max_tool_iterations ({max_iterations}); "
+                        "stopping to avoid a runaway loop. Raise `max_tool_iterations` via "
+                        "/set if this turn genuinely needs more round-trips.",
+                    )
+                    return
+
                 pending_tool_calls = [canonicalize_tool_call(self.tools, call) for call in pending_tool_calls]
 
                 # Re-evaluate current interaction kind each loop in case it changed

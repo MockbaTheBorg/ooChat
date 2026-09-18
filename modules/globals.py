@@ -18,11 +18,17 @@ DEFAULTS = {
     'add_thinking_to_context': True,
     'max_tool_output_chars': 16384,
     'tool_timeout': 120,
+    'max_tool_iterations': 25,  # hard cap on model<->tool round-trips per turn
     'default_max_tokens': None,
     'system_prompt': None,  # Default system prompt (None = no system prompt)
     'max_subagents': 20,  # concurrent sub-agent cap for spawn_agent's AgentPool
     'max_subagent_iterations': 25,  # per-sub-agent model<->tool round-trip cap
     'subagent_timeout': 300,  # wall-clock budget (seconds) per sub-agent run; 0/None disables
+    # Named model tiers a spawn_agent call can request via its `tier` arg
+    # instead of a literal model name. Unset entries mean that tier is not
+    # configured; no auto-classification picks one on the caller's behalf.
+    'model_tiers': {'fast': None, 'balanced': None, 'smart': None},
+    'max_memory_chars': 4096,  # max chars of ./.ooChat/memory.md injected into the system prompt
 }
 
 # Runtime GLOBALS dictionary (initialized with defaults, updated by config/CLI)
