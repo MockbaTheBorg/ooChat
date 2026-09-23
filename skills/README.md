@@ -156,6 +156,7 @@ mode is restored after the skill completes.
 | `example.json` | `example` | Demonstrate how skills work. |
 | `explain.json` | `explain` | Explain code, concepts, or errors in plain language. |
 | `summarize.json` | `summarize` | Summarize text or current conversation content. |
+| `swarm.json` | `swarm` | Handle a request, delegating independent testable subtasks to the `swarm` CLI. |
 | `translate.json` | `translate` | Translate text using `globals.lang`. |
 
 ## Creating A New Skill
