@@ -13,6 +13,7 @@ def register(chat):
     chat.add_command(
         name="/help",
         handler=handler,
+        shortcut="?",
         description="Show help table, or `/help <cmd>` for details",
         usage="[command]",
         long_help=(

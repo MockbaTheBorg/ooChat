@@ -61,7 +61,7 @@ def register(chat):
         name="/system",
         handler=system_handler,
         description="Get or set the session system prompt",
-        usage="/system [--reset | --clear | text]",
+        usage="[--reset | --clear | text]",
         long_help=(
             "Gets, sets, resets, or clears the session system prompt.\n\n"
             "**Usage:**\n"

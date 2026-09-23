@@ -1,4 +1,4 @@
-"""Promote command to change interaction kinds.
+"""Promote command to change turn kinds.
 
 Command: /promote <kind> <spec>
 Where <kind> is 'local' or 'remote', and <spec> is a comma-separated list
@@ -73,35 +73,35 @@ def register(chat):
         if kind not in {"local", "remote"}:
             return {"display": "Kind must be 'local' or 'remote'.\n", "context": None}
 
-        max_id = max( (i.id for i in chat.context.interactions), default=0 )
+        max_id = max( (i.id for i in chat.context.turns), default=0 )
         if max_id == 0:
-            return {"display": "No interactions to promote.\n", "context": None}
+            return {"display": "No turns to promote.\n", "context": None}
 
         ids = _expand_spec(spec, max_id)
         if not ids:
-            return {"display": "No valid interaction ids found in spec.\n", "context": None}
+            return {"display": "No valid turn ids found in spec.\n", "context": None}
 
         changed = []
-        for inter in chat.context.interactions:
-            if inter.id in ids:
-                if inter.kind != kind:
-                    inter.kind = kind
-                    changed.append(inter.id)
+        for turn in chat.context.turns:
+            if turn.id in ids:
+                if turn.kind != kind:
+                    turn.kind = kind
+                    changed.append(turn.id)
 
         if changed:
             chat.session.save()
             # Request an immediate redraw so UI reflects new kinds/colors
-            return {"display": f"Promoted interactions: {sorted(changed)}\n", "context": None, "redraw": True}
+            return {"display": f"Promoted turns: {sorted(changed)}\n", "context": None, "redraw": True}
         else:
-            return {"display": "No interactions changed.\n", "context": None}
+            return {"display": "No turns changed.\n", "context": None}
 
     chat.add_command(
         name="/promote",
         handler=promote_handler,
-        description="Promote interactions to local or remote",
+        description="Promote turns to local or remote",
         usage="<local|remote> <spec>",
         long_help=(
-            "Change the kind of stored interactions so they are included or "
+            "Change the kind of stored turns so they are included or "
             "excluded from future model context. `spec` accepts comma-separated "
             "integers and ranges (e.g. '1,3-5,-3,4-')."
         ),

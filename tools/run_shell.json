@@ -14,6 +14,6 @@
     },
     "required": ["command"]
   },
-  "argv": ["python3", "-u", "tools/run_shell.py"],
+  "argv": ["python3", "-u", "{tool_dir}/run_shell.py"],
   "timeout": 60
 }

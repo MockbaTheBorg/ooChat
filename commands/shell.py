@@ -72,7 +72,7 @@ def register(chat):
             # is what the redraw will show). Return a redraw request so
             # the UI refreshes from saved session state.
             summary = f"Shell command executed: {args}"
-            # Add as a new user interaction then attach tool output
+            # Add as a new user turn then attach tool output
             try:
                 chat.context.add_user(summary)
                 call_id = f"manual-shell-{uuid.uuid4().hex[:8]}"

@@ -211,3 +211,7 @@ __marimo__/
 pytest*
 tests/
 .ooChat/
+
+# Dual-session coordination scratch files (not project code)
+AGENT_LOG.md
+AGENT_TASKS.md

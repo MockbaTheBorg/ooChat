@@ -9,6 +9,7 @@ import threading
 import time
 import os
 import select
+import shutil
 import atexit
 import termios
 import tty
@@ -31,8 +32,96 @@ except Exception:
 # Console instance for rich output
 _console = None
 
+
+class _SafeConsoleFile:
+    """File-like object the shared Rich `Console` writes to.
+
+    Rich detects color/terminal capability once, at `Console()`
+    construction, and keeps emitting full ANSI SGR codes on every
+    `.print()` after that regardless of what `sys.stdout` currently is.
+    Since T16, render calls (`render_markdown`, `render_markdown_panel`,
+    etc. — everything that goes through `get_console()`) can run on the
+    background turn-worker thread while the main thread is inside an
+    *active* `session.prompt()`; `patch_stdout()` proxies `sys.stdout`
+    process-wide for as long as that's open, and that proxy's virtual
+    screen model doesn't interpret raw ANSI escape sequences — an ESC
+    byte just shows as a literal `?`. Branch on the calling thread
+    instead of writing to `sys.stdout` unconditionally: on the main
+    thread (nothing else is ever using the terminal then — commands like
+    `/skill` run synchronously, `patch_stdout` is only open for the
+    duration of `get_input()`'s own call, which has already returned by
+    the time any of this runs), write straight through, byte-for-byte
+    what always happened. Off the main thread, hand the text to
+    `prompt_toolkit`'s own ANSI-aware print instead, which can render it
+    correctly through an active `patch_stdout` scope (and degrades
+    gracefully with no active prompt at all, so it's safe unconditionally).
+    """
+
+    def write(self, text: str) -> None:
+        if not text:
+            return
+        if threading.current_thread() is threading.main_thread():
+            try:
+                sys.stdout.write(text)
+            except Exception:
+                pass
+            return
+        try:
+            from prompt_toolkit import print_formatted_text
+            from prompt_toolkit.formatted_text import ANSI
+            print_formatted_text(ANSI(text), end="")
+        except Exception:
+            pass
+
+    def flush(self) -> None:
+        if threading.current_thread() is threading.main_thread():
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+        # prompt_toolkit's print_formatted_text flushes on its own.
+
+    def isatty(self) -> bool:
+        # Reflect the *real* terminal state, not a hardcoded True -- Rich
+        # asks this to decide whether to emit color at all, and that
+        # decision must stay correct in a genuinely non-terminal context
+        # (piped output, or captured under a test runner) exactly like it
+        # was before this class existed. `sys.__stdout__` is the original
+        # stdout the interpreter started with, unaffected by patch_stdout
+        # or a test runner reassigning `sys.stdout` -- a stable read of
+        # whether this process is actually attached to a real terminal.
+        try:
+            return bool(sys.__stdout__ and sys.__stdout__.isatty())
+        except Exception:
+            return False
+
 # Spinner sequence (single string so it can be easily modified)
 SPINNER_SEQUENCE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def set_terminal_title(title: str) -> None:
+    """Set the terminal/tab window title via the OSC 2 escape sequence.
+
+    Written directly to `sys.__stdout__` (the real, original stdout),
+    bypassing `patch_stdout`'s proxy entirely -- unlike visible text, a
+    title-setting sequence never occupies screen space or moves the
+    cursor, so it can't corrupt a live input line the way a raw color
+    escape can (see `_SafeConsoleFile`'s docstring above); patch_stdout's
+    virtual screen model never needs to see or interpret these bytes,
+    so this is safe to call from any thread, unlike printing visible
+    text. No-op if stdout isn't a real terminal (piped output, tests,
+    etc.) or the write fails for any reason.
+    """
+    try:
+        if not (sys.__stdout__ and sys.__stdout__.isatty()):
+            return
+        # Strip control characters defensively (title text should never
+        # contain a raw ESC/BEL, e.g. from an unusual directory name).
+        safe_title = "".join(ch for ch in title if ch.isprintable())
+        sys.__stdout__.write(f"\x1b]2;{safe_title}\x07")
+        sys.__stdout__.flush()
+    except Exception:
+        pass
 
 # Event set when the user interrupts a spinning operation (ESC pressed)
 _spinner_interrupted: threading.Event = threading.Event()
@@ -42,10 +131,15 @@ _terminal_mode_fd: Optional[int] = None
 _terminal_mode_attrs = None
 
 def get_console():
-    """Get or create rich console instance."""
+    """Get or create rich console instance.
+
+    Uses `_SafeConsoleFile` (see class docstring) so output rendered off
+    the main thread — the only place `patch_stdout` can be concurrently
+    active — survives correctly instead of showing garbled ANSI.
+    """
     global _console
     if _console is None and RICH_AVAILABLE:
-        _console = Console()
+        _console = Console(file=_SafeConsoleFile())
     return _console
 
 
@@ -71,12 +165,51 @@ def set_spinner_interrupt_callback(callback: Optional[Callable[[], None]]) -> No
     _spinner_interrupt_callback = callback
 
 
+def set_spinner_interrupt() -> None:
+    """Mark the in-flight response as interrupted and fire the registered
+    interrupt callback, the same way the spinner's own raw-stdin ESC
+    detection does (see `_spinner_loop`).
+
+    `_spinner_loop`'s own ESC detection only runs when the spinner was
+    started on the main thread; since turn processing now normally runs
+    on a background worker thread, that path is skipped (see
+    `_start_spinner`'s docstring) and `spinner_was_interrupted()` never
+    gets set on its own. `request_cancel()` calls this directly so a
+    streaming request blocked on a slow/hung network read is closed
+    immediately (via the callback, e.g. `send_chat`'s
+    `_close_active_response`) instead of only being noticed at the next
+    chunk boundary -- which, for a truly stuck read, is never.
+    """
+    try:
+        _spinner_interrupted.set()
+    except Exception:
+        pass
+    try:
+        if callable(_spinner_interrupt_callback):
+            _spinner_interrupt_callback()
+    except Exception:
+        pass
+
+
 def _enter_spinner_input_mode() -> bool:
     """Put stdin into cbreak mode for ESC detection.
 
     Returns True when this call changed the terminal mode.
+
+    Only ever does this from the main thread. Turn processing (model +
+    tool calls, including any spinner it starts) now runs on a background
+    worker thread (see oochat.py's turn-worker), while the main thread
+    owns stdin continuously via prompt_toolkit's PromptSession. Two
+    concurrent readers of the same stdin fd — this spinner's raw os.read
+    loop and prompt_toolkit's own input handling — would race for
+    keystrokes and fight over termios state. Skipping raw-mode stdin
+    reads off the main thread makes the spinner visual-only (stdout
+    writes are still safe) in that case; ESC-based cancellation is
+    superseded by a main-thread key binding instead (see T17).
     """
     global _terminal_mode_fd, _terminal_mode_attrs
+    if threading.current_thread() is not threading.main_thread():
+        return False
     try:
         if not sys.stdin.isatty():
             return False
@@ -171,6 +304,46 @@ def render_markdown(text: str, stream: TextIO = None) -> None:
     stream.flush()
 
 
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds as a bracketed label, e.g. '[1.2s]' or '[1m05s]'."""
+    if seconds < 60:
+        return f"[{seconds:.1f}s]"
+    minutes, secs = divmod(int(seconds), 60)
+    return f"[{minutes}m{secs:02d}s]"
+
+
+def render_turn_separator(elapsed: Optional[float] = None) -> None:
+    """Draw the horizontal rule printed after a turn's response.
+
+    With `elapsed` given, the rule embeds it as a `[1.2s]` label, drawn
+    between the rule's two dashed segments so the label's own width is
+    subtracted from the line rather than added on top of it. Without
+    `elapsed`, draws a plain full-width rule as before.
+    """
+    label = _format_elapsed(elapsed) if elapsed is not None else None
+
+    if RICH_AVAILABLE:
+        from rich.rule import Rule
+        console = get_console()
+        try:
+            console.print(Rule(f"[dim]{label}[/dim]") if label else Rule())
+            return
+        except Exception:
+            pass
+
+    width = shutil.get_terminal_size((80, 20)).columns
+    if label:
+        text = f" {label} "
+        if len(text) < width:
+            left = (width - len(text)) // 2
+            right = width - left - len(text)
+            print(("-" * left) + text + ("-" * right))
+        else:
+            print(text.strip())
+    else:
+        print("-" * width)
+
+
 def render_markdown_panel(text: str, title: str = None,
                           style: str = "cyan", stream: TextIO = None) -> None:
     """Render text in a styled panel (for thinking blocks).
@@ -226,9 +399,13 @@ class Renderer:
         # separator (HR) was printed after it. This persists state
         # across redraws so callers (like the prompt renderer) can
         # decide whether to emit a separator before printing a new
-        # interaction header.
+        # turn header.
         self._last_printed_separator: bool = False
         self._last_role: Optional[str] = None
+        # Wall-clock start of the in-flight model response, set by
+        # `start_response()` and read by `end_response()` to show how
+        # long the turn took in the separator drawn after it.
+        self._response_start: Optional[float] = None
 
     def set_mode(self, mode: str) -> None:
         """Set render mode.
@@ -250,6 +427,7 @@ class Renderer:
         self._in_think = False
         self._current_think = ""
         self._thinking_blocks = []
+        self._response_start = time.time()
         # If in markdown mode, show a transient 'Thinking...' indicator
         # on TTYs. This is animated but non-blocking and will be stopped
         # by `end_response` before the final content is printed.
@@ -319,6 +497,12 @@ class Renderer:
         # Stop transient spinner (if any) before rendering final content.
         self._stop_spinner()
 
+        # How long this turn took, from `start_response()` to now.
+        elapsed = None
+        if self._response_start is not None:
+            elapsed = time.time() - self._response_start
+            self._response_start = None
+
         # Compose the final display text (buffer + any final_text)
         text = final_text or "".join(self._buffer)
 
@@ -333,11 +517,9 @@ class Renderer:
 
             print()  # Add newline before markdown
             render_markdown(text)
-            # Separator after assistant final answer
-            if RICH_AVAILABLE:
-                render_markdown("---")
-            else:
-                print("---")
+            # Separator after assistant final answer, with the turn's
+            # elapsed time embedded in it.
+            render_turn_separator(elapsed)
 
         # Note: thinking blocks collected during streaming are not displayed
         # here to avoid coupling rendering with thinking presentation.
@@ -489,7 +671,26 @@ class Renderer:
                 pass
 
     def _start_spinner(self) -> None:
-        """Start the spinner thread (no-op if already running)."""
+        """Start the spinner thread (no-op if already running, or if not
+        called from the main thread).
+
+        Since T16, a turn's model call (and thus this) can run on the
+        background turn-worker thread while the main thread is inside an
+        *active* `session.prompt()` (patch_stdout proxies `sys.stdout`
+        process-wide for as long as that's open). The spinner animates by
+        writing raw, newline-less `\r<char> ` fragments straight to
+        `sys.stdout` — fine when nothing else owns the terminal, but not
+        the complete/newline-terminated writes prompt_toolkit's
+        `StdoutProxy` is built to buffer and flush safely. Racing the two
+        produces visible flicker and a misplaced prompt line. Skipping the
+        animation off the main thread avoids the race entirely; the
+        toolbar's "active turn" indicator (see modules/jobs.py) already
+        covers user feedback for that case. This mirrors the guard
+        `_enter_spinner_input_mode` already applies to the spinner's
+        stdin-reading half, for the same underlying reason.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            return
         if self._spinner_thread and self._spinner_thread.is_alive():
             return
         self._spinner_stop = threading.Event()
@@ -614,7 +815,7 @@ def redraw_conversation(messages: List[Dict[str, Any]],
         except Exception:
             pass
 
-    # session_id header intentionally omitted; interaction ids are printed
+    # session_id header intentionally omitted; turn ids are printed
     # immediately before prompts that will create context.
 
     if show_header:
@@ -624,23 +825,23 @@ def redraw_conversation(messages: List[Dict[str, Any]],
         else:
             print("=== Conversation ===\n")
 
-    last_interaction_id = None
+    last_turn_id = None
     last_printed_separator = False
     last_role = None
 
     for msg in messages:
-        # If we've moved to a new interaction, print a separator between
-        # full interactions (but avoid duplicating if a separator was
+        # If we've moved to a new turn, print a separator between
+        # full turns (but avoid duplicating if a separator was
         # just printed by the previous assistant rendering).
-        inter_id = msg.get("interaction_id")
-        # Print a separator when starting a new interaction. Avoid
+        turn_id = msg.get("turn_id")
+        # Print a separator when starting a new turn. Avoid
         # duplicating separators printed by assistant rendering, but
         # ensure we print one when the previous message was a tool
         # result (tools don't emit an HR themselves).
         need_separator = (
-            inter_id is not None
-            and inter_id != last_interaction_id
-            and last_interaction_id is not None
+            turn_id is not None
+            and turn_id != last_turn_id
+            and last_turn_id is not None
             and (not last_printed_separator or last_role == "tool")
         )
         if need_separator:
@@ -658,29 +859,29 @@ def redraw_conversation(messages: List[Dict[str, Any]],
         content = msg.get("content", "")
         is_local = bool(msg.get("local", False))
         if role == "user":
-            # Print an interaction header before the user prompt when the
-            # interaction id changes. This shows `Interaction: #n` colored
+            # Print a turn header before the user prompt when the
+            # turn id changes. This shows `Turn: #n` colored
             # the same way as other system messages.
             printed_header = False
             try:
-                if inter_id is not None and inter_id != last_interaction_id:
+                if turn_id is not None and turn_id != last_turn_id:
                     printed_header = True
                     if renderer:
-                        renderer.render_system_message(f"Interaction: #{inter_id}")
+                        renderer.render_system_message(f"Turn: #{turn_id}")
                     else:
                         if RICH_AVAILABLE:
                             console = get_console()
-                            console.print(f"[dim]Interaction: #{inter_id}[/dim]")
+                            console.print(f"[dim]Turn: #{turn_id}[/dim]")
                         else:
-                            print(f"Interaction: #{inter_id}")
+                            print(f"Turn: #{turn_id}")
             except Exception:
                 try:
-                    print(f"Interaction: #{inter_id}")
+                    print(f"Turn: #{turn_id}")
                 except Exception:
                     pass
 
             # Show user prompt with green >>> if possible. When we just
-            # printed an interaction header, avoid emitting an extra blank
+            # printed a turn header, avoid emitting an extra blank
             # line before the prompt.
             try:
                 if renderer:
@@ -742,8 +943,8 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 render_content = content
 
             if getattr(renderer, 'mode', 'markdown') == "markdown":
-                # Render assistant content; interaction ids are shown before
-                # the user prompt for each interaction, so do not include an
+                # Render assistant content; turn ids are shown before
+                # the user prompt for each turn, so do not include an
                 # inline id here.
                 if RICH_AVAILABLE and is_local:
                     console = get_console()
@@ -821,11 +1022,11 @@ def redraw_conversation(messages: List[Dict[str, Any]],
                 print(f"[Tool result]:\n{render_content}\n")
             last_printed_separator = False
 
-        # Update last_interaction_id and last_role now that the message
+        # Update last_turn_id and last_role now that the message
         # has been rendered so future iterations can determine whether a
         # separator is needed.
         last_role = role
-        last_interaction_id = inter_id
+        last_turn_id = turn_id
 
     # Persist the last rendered role and separator state on the
     # renderer so callers (for example the prompt printer) can decide

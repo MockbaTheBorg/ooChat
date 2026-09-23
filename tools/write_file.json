@@ -18,6 +18,6 @@
     },
     "required": ["path", "content"]
   },
-  "argv": ["python3", "-u", "tools/write_file.py"],
+  "argv": ["python3", "-u", "{tool_dir}/write_file.py"],
   "timeout": 30
 }

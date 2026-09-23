@@ -48,17 +48,17 @@ def register(chat):
                 "context": None,
             }
 
-        # Determine how many interactions (turns) to compact
+        # Determine how many turns (turns) to compact
         turns_to_compact = current_turns - keep_last
 
-        # Interactions list (old -> new). System prompt is stored separately.
-        interactions = list(chat.context.interactions)
+        # Turns list (old -> new). System prompt is stored separately.
+        turns = list(chat.context.turns)
 
         if turns_to_compact <= 0:
             return {"display": "Nothing to compact.\n", "context": None}
 
         # Ask for confirmation if compacting will modify the session
-        non_system_msgs = [m for inter in interactions for m in inter.messages]
+        non_system_msgs = [m for turn in turns for m in turn.messages]
         if non_system_msgs:
             confirm = input(
                 "Compacting will summarize older conversation and modify session context. Proceed? [y/N]: "
@@ -66,11 +66,11 @@ def register(chat):
             if confirm != 'y':
                 return {"display": "Compaction cancelled.\n", "context": None}
 
-        # Build text to summarize from the oldest interactions
-        compact_interactions = interactions[:turns_to_compact]
+        # Build text to summarize from the oldest turns
+        compact_turns = turns[:turns_to_compact]
         compact_text_parts = []
-        for inter in compact_interactions:
-            for m in inter.messages:
+        for turn in compact_turns:
+            for m in turn.messages:
                 compact_text_parts.append(f"{m.role}: {m.content}")
 
         compact_text = "\n".join(compact_text_parts)
@@ -93,7 +93,7 @@ def register(chat):
                     "context": None,
                 }
 
-            # Create new context with summary and kept interactions
+            # Create new context with summary and kept turns
             from modules.context import Context
             new_context = Context()
 
@@ -103,12 +103,12 @@ def register(chat):
             else:
                 new_context.add_system(f"[Previous conversation summary]\n{summary}")
 
-            # Recreate kept interactions in order
-            kept_interactions = interactions[turns_to_compact:]
-            for old_inter in kept_interactions:
-                for m in old_inter.messages:
+            # Recreate kept turns in order
+            kept_turns = turns[turns_to_compact:]
+            for old_turn in kept_turns:
+                for m in old_turn.messages:
                     if m.role == 'user':
-                        new_context.add_user(m.content, local=(old_inter.kind == 'local'))
+                        new_context.add_user(m.content, local=(old_turn.kind == 'local'))
                     elif m.role == 'assistant':
                         new_context.add_assistant(m.content, tool_calls=m.tool_calls)
                     elif m.role == 'tool':
